@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Упрощённый конфигуратор электрического щита: библиотека модулей, DIN-рейка, связи и спецификация.">
+  <meta name="theme-color" content="#0f172a">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232563eb'/%3E%3Cpath d='M20 17v30M44 17v30M20 32h24' stroke='white' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
+  <title>Щит.Студия — конфигуратор электрического щита</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./script.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#workspace">Перейти к рабочей области</a>
+
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand" aria-label="Щит.Студия">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" fill="none">
+              <rect x="3" y="5" width="26" height="22" rx="5" stroke="currentColor" stroke-width="1.8"/>
+              <path d="M10 10v12M22 10v12M10 16h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              <circle cx="10" cy="10" r="1.4" fill="currentColor"/>
+              <circle cx="22" cy="22" r="1.4" fill="currentColor"/>
+            </svg>
+          </span>
+          <span class="brand-copy">
+            <span class="brand-title">Щит.Студия</span>
+            <span class="brand-subtitle">конфигуратор щитов</span>
+          </span>
+        </div>
+
+        <div class="project-block">
+          <label for="project-name">Проект</label>
+          <div class="project-line">
+            <input id="project-name" class="project-input" type="text" value="Щит ЩР-1"
+                   maxlength="60" autocomplete="off" spellcheck="false" aria-label="Название проекта">
+            <span class="save-state" id="save-state" role="status" aria-live="polite">
+              <span class="save-dot" aria-hidden="true"></span>
+              <span id="save-text">Сохранено локально</span>
+            </span>
+          </div>
+        </div>
+
+        <div class="topbar-actions">
+          <label class="sim-toggle" for="simulation-toggle"
+                 title="Показывать, какие провода находятся под напряжением">
+            <input class="sim-toggle-input" id="simulation-toggle" type="checkbox" checked
+                   aria-label="Симуляция тока">
+            <span class="sim-toggle-track" aria-hidden="true">
+              <span class="sim-toggle-thumb"></span>
+            </span>
+            <span class="sim-toggle-copy" aria-hidden="true">
+              <span class="sim-toggle-title">
+                <span class="sim-toggle-title-full">Симуляция тока</span>
+                <span class="sim-toggle-title-short">Ток</span>
+              </span>
+              <span class="sim-toggle-state" id="simulation-state">Вкл</span>
+            </span>
+          </label>
+          <button class="btn btn-secondary" id="undo-btn" type="button"
+                  title="Назад — отменить действие (Ctrl+Z)" disabled>
+            <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="M7.2 6.2 4 9.4l3.2 3.2M4.4 9.4h7.1a4.1 4.1 0 0 1 0 8.2H9.2"
+                    stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>Назад</span>
+          </button>
+          <button class="btn btn-secondary" id="redo-btn" type="button"
+                  title="Вперед — повторить действие (Ctrl+Y / Ctrl+Shift+Z)" disabled>
+            <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="m12.8 6.2 3.2 3.2-3.2 3.2m2.8-3.2H8.5a4.1 4.1 0 0 0 0 8.2h2.3"
+                    stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>Вперед</span>
+          </button>
+          <button class="btn btn-secondary" id="export-csv" type="button" title="Скачать спецификацию в CSV">
+            <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="M10 3v9m0 0 3.2-3.2M10 12 6.8 8.8M4 14.5V16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-1.5"
+                    stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>Экспорт CSV</span>
+          </button>
+          <button class="btn btn-secondary" id="export-png" type="button" title="Скачать текущий холст в PNG">
+            <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <rect x="2.75" y="2.75" width="14.5" height="14.5" rx="2.5"
+                    stroke="currentColor" stroke-width="1.5"/>
+              <circle cx="7.2" cy="7.2" r="1.45" fill="currentColor"/>
+              <path d="m3.4 14.6 3.5-3.5a1.4 1.4 0 0 1 2 0l1.9 1.9m0 0 1.4-1.4a1.4 1.4 0 0 1 2 0l2.5 2.5"
+                    stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>Скачать изображение</span>
+          </button>
+          <button class="btn btn-danger-ghost" id="clear-project" type="button" title="Очистить модули и связи">
+            <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="M4.5 6h11M8 6V4.5h4V6m-6 0 .7 10h6.6L14 6M8.6 9v4.4M11.4 9v4.4"
+                    stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>Очистить проект</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout" id="workspace">
+      <aside class="library-panel" aria-labelledby="library-title">
+        <div class="panel-header">
+          <span class="eyebrow"><span class="eyebrow-index">01</span>Библиотека</span>
+          <h2 id="library-title">Компоненты</h2>
+          <p>Перетащите модуль на DIN-рейку или нажмите, чтобы добавить в конец.</p>
+        </div>
+
+        <div class="library-search">
+          <span class="search-icon" aria-hidden="true">
+            <svg viewBox="0 0 20 20" fill="none">
+              <circle cx="8.8" cy="8.8" r="5.3" stroke="currentColor" stroke-width="1.6"/>
+              <path d="m12.8 12.8 3.4 3.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+          </span>
+          <label class="visually-hidden" for="library-search">Поиск по названию или категории</label>
+          <input class="library-search-input" id="library-search" type="search"
+                 placeholder="Поиск: УЗО, клеммы, QF…" autocomplete="off" spellcheck="false">
+          <button class="library-search-clear" id="library-search-clear" type="button"
+                  aria-label="Очистить поиск" title="Очистить поиск" hidden>×</button>
+        </div>
+        <p class="library-search-status" id="library-search-status" role="status" aria-live="polite"></p>
+
+        <div class="library-list" id="library-list"></div>
+        <div class="library-no-results" id="library-no-results" hidden>
+          <strong>Ничего не найдено</strong>
+          <span>Попробуйте «УЗО», «клеммы» или «QF».</span>
+        </div>
+        <div class="library-footer">
+          <span id="library-count">22 компонента</span>
+          <span class="offline-badge"><span aria-hidden="true"></span>локально</span>
+        </div>
+      </aside>
+
+      <section class="workspace" aria-labelledby="workspace-title">
+        <header class="workspace-head">
+          <div>
+            <span class="eyebrow"><span class="eyebrow-index">02</span>Рабочая область</span>
+            <h1 id="workspace-title">Сборка щита</h1>
+          </div>
+          <div class="rail-meter" id="rail-meter">
+            <div class="rail-meter-top">
+              <span>DIN-рейка</span>
+              <strong id="rail-usage">0 / 18 P</strong>
+            </div>
+            <div class="rail-meter-track" role="progressbar" aria-label="Заполнение DIN-рейки"
+                 aria-valuemin="0" aria-valuemax="18" aria-valuenow="0" id="rail-progress">
+              <span id="rail-fill"></span>
+            </div>
+            <span class="rail-free" id="rail-free">Свободно 18 P</span>
+          </div>
+        </header>
+
+        <section class="canvas-shell" id="canvas-shell" aria-label="Холст сборки щита">
+          <div class="canvas-toolbar">
+            <div class="canvas-toolbar-left">
+              <span class="live-chip"><span class="live-dot" aria-hidden="true"></span>Схема</span>
+              <span class="drag-tip">Клик по порту — провод, перетаскивание — порядок · колесико — зум, Пробел / средняя кнопка + тяга — панорама</span>
+            </div>
+            <div class="view-controls" role="group" aria-label="Масштаб и вид холста">
+              <button class="view-btn" id="zoom-out" type="button"
+                      title="Уменьшить масштаб (колесико вниз)" aria-label="Уменьшить масштаб">−</button>
+              <output class="zoom-level" id="zoom-level" title="Текущий масштаб">100%</output>
+              <button class="view-btn" id="zoom-in" type="button"
+                      title="Увеличить масштаб (колесико вверх)" aria-label="Увеличить масштаб">+</button>
+              <button class="view-btn view-reset" id="reset-view" type="button"
+                      title="Сбросить вид: 100% и исходный центр (Home)">
+                <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path d="M3.5 9.3a6.5 6.5 0 1 1 1.6 5.2M3.5 14.5V10h4.5"
+                        stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>Сбросить вид</span>
+              </button>
+            </div>
+            <div class="connect-status">
+              <span id="connection-hint" aria-live="polite">Кликните по порту, чтобы начать провод</span>
+              <button class="inline-action" id="cancel-connect" type="button" hidden>Отменить</button>
+              <button class="inline-action" id="add-rail" type="button" title="Добавить ещё одну DIN-рейку">+ Добавить рейку</button>
+            </div>
+          </div>
+
+          <div class="migration-banner" id="migration-banner" hidden role="status" aria-live="polite">
+            <span class="migration-icon" aria-hidden="true">i</span>
+            <span data-migration-text>Провода сброшены из-за обновления, проведите заново</span>
+            <button class="migration-close" id="migration-banner-close" type="button"
+                    aria-label="Скрыть уведомление" title="Скрыть">×</button>
+          </div>
+
+          <div class="svg-wrap" id="svg-wrap">
+            <svg id="panel-canvas" class="panel-canvas" viewBox="0 0 1016 520"
+                 role="group" aria-labelledby="canvas-title canvas-desc">
+              <title id="canvas-title">Холст электрического щита</title>
+              <desc id="canvas-desc">Источник питания с главным рубильником и портами L1, L2, L3, N, PE, несколько DIN-реек, расположенных вертикально. Перетаскивайте модули внутри рейки или между рейками. Кликните по порту источника или модуля, затем по второму порту, чтобы создать провод. Шины N и PE — широкие модули с рядом клемм: ток и фаза распределяются на все их порты, к шине N подключаются только провода N, к шине PE — только PE. Колесико мыши масштабирует схему относительно курсора; зажмите Пробел или среднюю кнопку мыши и тягайте, чтобы перемещаться по холсту; кнопка «Сбросить вид» или клавиша Home возвращает 100% масштаб.</desc>
+              <defs>
+                <linearGradient id="canvas-gradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop class="canvas-grad-top" offset="0"/>
+                  <stop class="canvas-grad-bottom" offset="1"/>
+                </linearGradient>
+                <linearGradient id="rail-metal-gradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop class="rail-metal-start" offset="0"/>
+                  <stop class="rail-metal-end" offset="1"/>
+                </linearGradient>
+                <pattern id="dot-grid" width="24" height="24" patternUnits="userSpaceOnUse">
+                  <circle class="canvas-grid-dot" cx="1" cy="1" r="0.9" opacity="0.7"/>
+                </pattern>
+                <pattern id="rail-holes" width="26" height="18" patternUnits="userSpaceOnUse">
+                  <rect class="rail-hole" x="8" y="5.5" width="10" height="7" rx="3.5"/>
+                </pattern>
+                <filter id="rail-shadow" x="-5%" y="-20%" width="110%" height="160%">
+                  <feDropShadow class="rail-shadow-filter" dx="0" dy="5" stdDeviation="7" flood-opacity="0.55"/>
+                </filter>
+                <filter id="module-shadow" x="-25%" y="-20%" width="150%" height="160%">
+                  <feDropShadow class="module-shadow-filter" dx="0" dy="3" stdDeviation="3" flood-opacity="0.45"/>
+                </filter>
+                <filter id="wire-glow" x="-40%" y="-40%" width="180%" height="180%">
+                  <feGaussianBlur stdDeviation="2.4" result="blur"/>
+                  <feMerge>
+                    <feMergeNode in="blur"/>
+                    <feMergeNode in="SourceGraphic"/>
+                  </feMerge>
+                </filter>
+              </defs>
+
+              <!-- Бесконечная область захвата мыши. При зуме < 100% viewBox
+                   больше пластины схемы, поэтому клик может попасть в пустоту
+                   за её пределами — этот невидимый слой гарантирует, что
+                   mousedown для панорамирования всегда дойдёт до холста. -->
+              <rect class="canvas-hit-area" id="canvas-hit-area"
+                    x="-10000" y="-10000" width="20000" height="20000"
+                    fill="none" pointer-events="all"/>
+
+              <rect class="canvas-surface" id="canvas-surface" data-canvas-bg="true" width="1016" height="520" fill="url(#canvas-gradient)"/>
+              <rect class="canvas-grid" id="canvas-grid" width="1016" height="520" fill="url(#dot-grid)" pointer-events="none"/>
+              <circle class="canvas-glow canvas-glow-blue" cx="812" cy="92" r="150" pointer-events="none"/>
+              <circle class="canvas-glow canvas-glow-teal" cx="190" cy="430" r="160" pointer-events="none"/>
+
+              <g id="layer-rail"></g>
+              <g id="layer-source"></g>
+              <g id="layer-wires"></g>
+              <g id="layer-modules"></g>
+              <g id="layer-ports"></g>
+              <g id="layer-preview"></g>
+            </svg>
+
+            <div class="port-tooltip" id="port-tooltip" hidden role="tooltip">Выберите второй порт</div>
+            <div class="port-phase-tooltip" id="port-phase-tooltip" hidden role="tooltip"></div>
+
+            <div class="wire-type-popover" id="wire-type-popover" hidden role="dialog"
+                 aria-labelledby="wire-type-title" aria-describedby="wire-type-desc">
+              <div class="wire-type-head">
+                <strong id="wire-type-title">Тип провода</strong>
+                <span id="wire-type-desc">Выберите назначение</span>
+              </div>
+              <div class="wire-type-options">
+                <button class="wire-type-option wire-type-l1" type="button" data-wire-type-option="L1">
+                  <span class="wire-type-marker" aria-hidden="true"></span>
+                  <span class="wire-type-copy"><strong>L1</strong><small>Фаза 1</small></span>
+                  <span class="wire-type-lock" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><rect x="3.5" y="7" width="9" height="6.5" rx="1.6" stroke="currentColor" stroke-width="1.4"/><path d="M5.6 7V5.2a2.4 2.4 0 0 1 4.8 0V7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
+                </button>
+                <button class="wire-type-option wire-type-l2" type="button" data-wire-type-option="L2">
+                  <span class="wire-type-marker" aria-hidden="true"></span>
+                  <span class="wire-type-copy"><strong>L2</strong><small>Фаза 2</small></span>
+                  <span class="wire-type-lock" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><rect x="3.5" y="7" width="9" height="6.5" rx="1.6" stroke="currentColor" stroke-width="1.4"/><path d="M5.6 7V5.2a2.4 2.4 0 0 1 4.8 0V7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
+                </button>
+                <button class="wire-type-option wire-type-l3" type="button" data-wire-type-option="L3">
+                  <span class="wire-type-marker" aria-hidden="true"></span>
+                  <span class="wire-type-copy"><strong>L3</strong><small>Фаза 3</small></span>
+                  <span class="wire-type-lock" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><rect x="3.5" y="7" width="9" height="6.5" rx="1.6" stroke="currentColor" stroke-width="1.4"/><path d="M5.6 7V5.2a2.4 2.4 0 0 1 4.8 0V7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
+                </button>
+                <button class="wire-type-option wire-type-n" type="button" data-wire-type-option="N">
+                  <span class="wire-type-marker" aria-hidden="true"></span>
+                  <span class="wire-type-copy"><strong>N</strong><small>Ноль</small></span>
+                  <span class="wire-type-lock" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><rect x="3.5" y="7" width="9" height="6.5" rx="1.6" stroke="currentColor" stroke-width="1.4"/><path d="M5.6 7V5.2a2.4 2.4 0 0 1 4.8 0V7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
+                </button>
+                <button class="wire-type-option wire-type-pe" type="button" data-wire-type-option="PE">
+                  <span class="wire-type-marker" aria-hidden="true"></span>
+                  <span class="wire-type-copy"><strong>PE</strong><small>Земля</small></span>
+                  <span class="wire-type-lock" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><rect x="3.5" y="7" width="9" height="6.5" rx="1.6" stroke="currentColor" stroke-width="1.4"/><path d="M5.6 7V5.2a2.4 2.4 0 0 1 4.8 0V7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
+                </button>
+              </div>
+              <button class="wire-type-cancel" id="wire-type-cancel" type="button">Отмена</button>
+            </div>
+
+            <div class="empty-state" id="empty-state" hidden>
+              <span class="empty-icon" aria-hidden="true">
+                <svg viewBox="0 0 32 32" fill="none">
+                  <rect x="4" y="9" width="24" height="15" rx="3" stroke="currentColor" stroke-width="1.6" stroke-dasharray="3 3"/>
+                  <path d="M16 12v6M13 15h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                </svg>
+              </span>
+              <strong>Рейка пока пуста</strong>
+              <span>Перетащите сюда компонент из библиотеки слева</span>
+            </div>
+
+            <div class="rail-alert" id="rail-alert" hidden role="status" aria-live="assertive">
+              <span class="rail-alert-icon" aria-hidden="true">!</span>
+              <span id="rail-alert-text">Не помещается на рейку</span>
+            </div>
+          </div>
+
+          <div class="canvas-footer">
+            <div class="canvas-legend" aria-label="Обозначения проводов">
+              <span><i class="wire-type-swatch wire-type-l1" aria-hidden="true"></i>L1 — фаза 1</span>
+              <span><i class="wire-type-swatch wire-type-l2" aria-hidden="true"></i>L2 — фаза 2</span>
+              <span><i class="wire-type-swatch wire-type-l3" aria-hidden="true"></i>L3 — фаза 3</span>
+              <span><i class="wire-type-swatch wire-type-n" aria-hidden="true"></i>N — ноль</span>
+              <span><i class="wire-type-swatch wire-type-pe" aria-hidden="true"></i>PE — земля</span>
+              <span class="legend-muted">Клик по проводу — выделить, двойной клик или × — удалить</span>
+            </div>
+            <span class="canvas-note">SVG-холст · viewBox · координаты через getSVGCoords() → getScreenCTM().inverse() с учётом масштаба</span>
+          </div>
+        </section>
+
+        <div class="details-grid">
+          <section class="spec-card" aria-labelledby="spec-title">
+            <header class="card-head">
+              <div>
+                <span class="eyebrow"><span class="eyebrow-index">03</span>Спецификация</span>
+                <h2 id="spec-title">Состав щита</h2>
+              </div>
+              <div class="card-head-actions">
+                <span class="card-meta" id="spec-meta">0 позиций</span>
+                <button class="icon-text-button" id="export-csv-secondary" type="button" title="Скачать CSV">
+                  <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <path d="M10 3v9m0 0 3.2-3.2M10 12 6.8 8.8M4 14.5V16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-1.5"
+                          stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  CSV
+                </button>
+              </div>
+            </header>
+            <div class="table-wrap">
+              <table class="spec-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Название модуля</th>
+                    <th scope="col" class="tag-col">Тег</th>
+                    <th scope="col" class="count-col">Количество</th>
+                  </tr>
+                </thead>
+                <tbody id="spec-body"></tbody>
+                <tfoot id="spec-foot" hidden>
+                  <tr>
+                    <td colspan="2">Итого</td>
+                    <td class="count-col"><span id="spec-total">0</span> шт.</td>
+                  </tr>
+                  <tr class="spec-rails-row">
+                    <td colspan="3">
+                      <span class="spec-wires-summary">
+                        <span>Рейки: <strong id="spec-rails-total">1</strong></span>
+                        <span class="spec-wires-caption">Модулей всего: <strong id="spec-modules-total">0</strong></span>
+                      </span>
+                    </td>
+                  </tr>
+                  <tr class="spec-wires-row">
+                    <td colspan="3">
+                      <span class="spec-wires-summary">
+                        <span>Соединений: <strong id="spec-connections-total">0</strong></span>
+                        <span class="spec-wires-caption">Провода:</span>
+                        <span class="spec-wire-tally wire-type-l1"><i aria-hidden="true"></i>L1 — <strong id="spec-wire-l1">0</strong></span>
+                        <span class="spec-wire-tally wire-type-l2"><i aria-hidden="true"></i>L2 — <strong id="spec-wire-l2">0</strong></span>
+                        <span class="spec-wire-tally wire-type-l3"><i aria-hidden="true"></i>L3 — <strong id="spec-wire-l3">0</strong></span>
+                        <span class="spec-wire-tally wire-type-n"><i aria-hidden="true"></i>N — <strong id="spec-wire-n">0</strong></span>
+                        <span class="spec-wire-tally wire-type-pe"><i aria-hidden="true"></i>PE — <strong id="spec-wire-pe">0</strong></span>
+                      </span>
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </section>
+
+          <aside class="connections-card" aria-labelledby="connections-title">
+            <header class="card-head compact">
+              <div>
+                <span class="eyebrow"><span class="eyebrow-index">04</span>Связи</span>
+                <h2 id="connections-title">Проводники</h2>
+              </div>
+              <span class="count-badge" id="connections-count">0</span>
+            </header>
+            <ul class="connection-list" id="connection-list"></ul>
+            <div class="connections-foot">
+              <span class="foot-dot" aria-hidden="true"></span>
+              <span>Проект сохраняется в этом браузере автоматически.</span>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <span>Прототип конфигуратора щитов</span>
+      <span>Vanilla JS · SVG · localStorage</span>
+    </footer>
+  </div>
+
+  <dialog class="confirm-dialog" id="clear-dialog" aria-labelledby="clear-dialog-title">
+    <form method="dialog">
+      <span class="dialog-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M12 8v5m0 3.2v.1M10.3 4.3 3.6 16a2 2 0 0 0 1.7 3h13.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z"
+                stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <h2 id="clear-dialog-title">Очистить проект?</h2>
+      <p>Все модули и связи будут удалены с холста. Название проекта сохранится. Действие можно отменить кнопкой «Назад».</p>
+      <div class="dialog-actions">
+        <button class="btn btn-secondary" type="submit" value="cancel" autofocus>Отмена</button>
+        <button class="btn btn-danger" type="submit" value="confirm">Очистить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false"></div>
+
+  <noscript>
+    <div class="noscript-banner">Для работы конфигуратора нужен включённый JavaScript.</div>
+  </noscript>
+</body>
+</html>
