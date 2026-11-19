@@ -160,7 +160,7 @@
           <div class="canvas-toolbar">
             <div class="canvas-toolbar-left">
               <span class="live-chip"><span class="live-dot" aria-hidden="true"></span>Схема</span>
-              <span class="drag-tip">Клик по порту — провод, перетаскивание — порядок · колесико — зум, Пробел / средняя кнопка + тяга — панорама</span>
+              <span class="drag-tip">Перетаскивание — слоты (с зазорами) · красный призрак — место занято · клик по порту — провод · двойной клик — подпись · колесико — зум, Пробел / средняя кнопка + тяга — панорама</span>
             </div>
             <div class="view-controls" role="group" aria-label="Масштаб и вид холста">
               <button class="view-btn" id="zoom-out" type="button"
@@ -286,6 +286,13 @@
               <button class="wire-type-cancel" id="wire-type-cancel" type="button">Отмена</button>
             </div>
 
+            <!-- Встроенное поле подписи: открывается двойным кликом по проводу
+                 или модулю и позиционируется прямо над выбранным элементом. -->
+            <input type="text" id="inline-editor" class="inline-editor-input"
+                   maxlength="200" autocomplete="off" spellcheck="false"
+                   placeholder="Enter — сохранить · Esc — отмена · клик вне — сохранить"
+                   aria-label="Подпись элемента" hidden>
+
             <div class="empty-state" id="empty-state" hidden>
               <span class="empty-icon" aria-hidden="true">
                 <svg viewBox="0 0 32 32" fill="none">
@@ -310,7 +317,7 @@
               <span><i class="wire-type-swatch wire-type-l3" aria-hidden="true"></i>L3 — фаза 3</span>
               <span><i class="wire-type-swatch wire-type-n" aria-hidden="true"></i>N — ноль</span>
               <span><i class="wire-type-swatch wire-type-pe" aria-hidden="true"></i>PE — земля</span>
-              <span class="legend-muted">Клик по проводу — выделить, двойной клик или × — удалить</span>
+              <span class="legend-muted">Клик по проводу — выделить, × — удалить, двойной клик — маркировка (по модулю — описание)</span>
             </div>
             <span class="canvas-note">SVG-холст · viewBox · координаты через getSVGCoords() → getScreenCTM().inverse() с учётом масштаба</span>
           </div>

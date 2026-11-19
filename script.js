@@ -18,9 +18,14 @@
 
   // Ключ намеренно остаётся прежним: так старые проекты находятся и мигрируют.
   const STORAGE_KEY = 'panel-builder.project.v1';
-  const SCHEMA_VERSION = 4;
+  // v5: модули привязаны к слотам (slot) вместо порядкового номера (order).
+  // Старые проекты с order конвертируются в slot при загрузке.
+  const SCHEMA_VERSION = 5;
   // История живёт только в памяти: в localStorage пишется лишь текущий проект.
   const HISTORY_LIMIT = 50;
+  // Пределы длины пользовательских подписей (описание модуля / маркировка провода).
+  const MAX_MODULE_DESCRIPTION_LENGTH = 200;
+  const MAX_WIRE_LABEL_LENGTH = 80;
 
   const SVG_WIDTH = 1016;
   const SVG_BASE_HEIGHT = 520;
@@ -43,6 +48,8 @@
     width: 916,
     height: 266,
     capacity: 18,
+    // startX — левая граница сетки слотов. X модуля = startX + slot * MODULE_UNIT.
+    startX: 74,
     moduleX: 74,
     moduleY: 250,
     moduleRight: 938
@@ -51,6 +58,14 @@
   const RAIL_GAP = 100;
   const RAIL_PITCH = RAIL.height + RAIL_GAP;
   const MAX_RAILS = 8;
+  // Вместимость рейки меняется кнопками [-]/[+] с шагом 1 модуль.
+  const MIN_RAIL_CAPACITY = 1;
+  const MAX_RAIL_CAPACITY = 24;
+  const RAIL_CAPACITY_STEP = 1;
+  // Рейка рисуется не фиксированной ширины, а по числу посадочных мест:
+  // запас слева/справа от модулей берём из эталонной геометрии RAIL.
+  const RAIL_PAD_LEFT = RAIL.moduleX - RAIL.x;
+  const RAIL_PAD_RIGHT = (RAIL.x + RAIL.width) - RAIL.moduleRight;
   // Вертикальные коридоры для проводов — за пределами пластины рейки.
   const CORRIDOR_LANE_GAP = 8;
 
@@ -595,12 +610,20 @@
     connectionsCount: document.getElementById('connections-count'),
     connectionList: document.getElementById('connection-list'),
     clearDialog: document.getElementById('clear-dialog'),
+    inlineEditor: document.getElementById('inline-editor'),
     toastRegion: document.getElementById('toast-region')
   };
 
   /* ------------------------------ State ------------------------------- */
 
   let project = null;
+  // Редактируемая подпись: { kind: 'module' | 'wire', id, anchorRect }.
+  let editing = null;
+  // Глобальная привязка открытого inline-поля к конкретному элементу холста.
+  // Используется горячими клавишами и обработчиками жестов, чтобы не дать
+  // Delete/зуму/панораме «проехаться» по элементу, пока идёт ввод.
+  let currentEditingId = null;
+  let currentEditingType = null; // 'module' | 'wire'
   let activePort = null;       // { moduleId, side, index } — первый выбранный порт
   let pendingWire = null;      // { moduleId, side, index } — второй порт, ждём тип L1…PE
   // Множество портов под напряжением, посчитанное calculatePowerFlow().
@@ -616,9 +639,17 @@
   let spaceHeld = false;
   let renderScheduled = false;
   let suppressCanvasClickUntil = 0;
+  // Одиночный клик по провору отложен: пока не истечёт это время, кнопка ×
+  // (появляется при выделении) не успеет перехватить второй клик двойного
+  // щелчка. Таймер сбрасывается в onWireDblClick / onCanvasDblClick.
+  let wireSelectTimer = null;
+  // Та же задержка для рычажка: два одиночных клика по нему не должны
+  // дважды переключать автомат, пока пользователь пытается задать подпись.
+  let moduleToggleTimer = null;
   let storageErrorAnnounced = false;
   let isLibraryFiltering = false;
   let showMigrationBanner = false;
+  let migrationNotice = MIGRATION_NOTICE;
   // Снимки только реек и связей: название проекта и прочие метаданные
   // не должны «откатываться» вместе со структурой щита.
   let history = [];
@@ -674,12 +705,112 @@
     return RAIL.moduleY + railOffsetY(railIndex);
   }
 
+  // Ширина пластины рейки зависит от вместимости: capacity * 48px + поля.
+  function railWidth(capacity) {
+    return capacity * MODULE_UNIT + RAIL_PAD_LEFT + RAIL_PAD_RIGHT;
+  }
+
+  // Правая кромка пластины и конец шкалы делений (последний слот).
+  function railRightEdge(capacity) {
+    return RAIL.x + railWidth(capacity);
+  }
+
+  function railModuleRight(capacity) {
+    return RAIL.moduleX + capacity * MODULE_UNIT;
+  }
+
+  // Центр зоны модулей конкретной рейки — нужен для выбора коридора провода.
+  function railModuleCenter(railIndex) {
+    const rail = project.rails[railIndex];
+    return (RAIL.moduleX + railModuleRight(rail ? rail.capacity : RAIL.capacity)) / 2;
+  }
+
+  /* ------------------------- Slot geometry (слоты) ---------------------
+     Модуль хранит не порядковый номер, а начальный слот slot.
+     Занимаемые слоты: slot .. slot + width - 1.
+     Пустые слоты между модулями допустимы и сохраняются при переносе.
+     X модуля = RAIL.startX + slot * MODULE_UNIT.
+  --------------------------------------------------------------------- */
+
+  function moduleSlotX(slot) {
+    return RAIL.startX + slot * MODULE_UNIT;
+  }
+
+  // Слот, на который «прилипает» модуль при перетаскивании.
+  function slotFromX(svgX, width, capacity, grabOffsetPx = 0) {
+    const localX = svgX - grabOffsetPx - RAIL.startX;
+    const raw = Math.round(localX / MODULE_UNIT);
+    return clamp(raw, 0, Math.max(0, capacity - width));
+  }
+
+  function clampSlot(rail, slot, width) {
+    const parsed = Number(slot);
+    const value = Number.isFinite(parsed) ? Math.round(parsed) : 0;
+    return clamp(value, 0, Math.max(0, rail.capacity - width));
+  }
+
+  // Множество всех занятых слотов рейки (кроме исключаемого модуля).
+  function occupiedSlots(rail, excludeModuleId = null) {
+    const used = new Set();
+    for (const module of rail.modules) {
+      if (module.id === excludeModuleId) continue;
+      for (let offset = 0; offset < module.width; offset += 1) {
+        used.add(module.slot + offset);
+      }
+    }
+    return used;
+  }
+
+  function rangeIsFree(used, slot, width) {
+    for (let offset = 0; offset < width; offset += 1) {
+      if (used.has(slot + offset)) return false;
+    }
+    return true;
+  }
+
+  function firstFreeSlot(used, width, capacity) {
+    for (let slot = 0; slot + width <= capacity; slot += 1) {
+      if (rangeIsFree(used, slot, width)) return slot;
+    }
+    return null;
+  }
+
+  // Главная проверка: модуль помещается, если все его слоты свободны
+  // и он не выходит за правый край рейки.
+  function canPlaceModule(rail, slot, width, excludeModuleId = null) {
+    if (!Number.isInteger(slot) || slot < 0 || slot + width > rail.capacity) return false;
+    return rangeIsFree(occupiedSlots(rail, excludeModuleId), slot, width);
+  }
+
+  // Поиск свободного места для добавления «в конец» (сохранение зазоров).
+  function findFreeSlot(rail, width, excludeModuleId = null) {
+    return firstFreeSlot(occupiedSlots(rail, excludeModuleId), width, rail.capacity);
+  }
+
+  function findFreeSlotAtEnd(rail, width, excludeModuleId = null) {
+    let lastEnd = 0;
+    for (const module of rail.modules) {
+      if (module.id === excludeModuleId) continue;
+      lastEnd = Math.max(lastEnd, module.slot + module.width);
+    }
+    if (canPlaceModule(rail, lastEnd, width, excludeModuleId)) return lastEnd;
+    return findFreeSlot(rail, width, excludeModuleId);
+  }
+
+  // Холст расширяется вместе с самой длинной рейкой, чтобы длинная рейка
+  // никогда не вылезала за viewBox (и не обрезалась при экспорте PNG).
+  function canvasWidth() {
+    const widest = project.rails.reduce((max, rail) =>
+      Math.max(max, railRightEdge(rail.capacity)), 0);
+    return Math.max(SVG_WIDTH, widest + 24);
+  }
+
   function canvasHeight() {
     return SVG_BASE_HEIGHT + railOffsetY(project.rails.length - 1);
   }
 
   function railWithRoom(width) {
-    return project.rails.find((rail) => rail.capacity - usedWidth(rail) >= width) || project.rails[0];
+    return project.rails.find((rail) => findFreeSlot(rail, width) !== null) || project.rails[0];
   }
 
   function railOfModule(moduleId) {
@@ -906,6 +1037,93 @@
     const text = String(value || '');
     if (text.length <= maxLength) return text;
     return `${text.slice(0, maxLength - 1).trimEnd()}…`;
+  }
+
+  // Разбивает подпись на до двух строк по словам; всё, что не поместилось,
+  // заменяется многоточием. Ширина считается в символах — для мелкого шрифта
+  // этого достаточно, чтобы текст гарантированно не вылезал за модуль.
+  function fitTextLines(value, maxChars, maxLines = 2) {
+    const words = String(value || '').trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) return [];
+    const lines = [''];
+    let truncated = false;
+
+    for (const word of words) {
+      const last = lines.length - 1;
+      const candidate = lines[last] ? `${lines[last]} ${word}` : word;
+      if (candidate.length <= maxChars) {
+        lines[last] = candidate;
+        continue;
+      }
+      if (lines.length < maxLines) {
+        if (word.length <= maxChars) {
+          lines.push(word);
+          continue;
+        }
+        let rest = word;
+        while (rest.length > maxChars && lines.length < maxLines) {
+          lines.push(rest.slice(0, maxChars));
+          rest = rest.slice(maxChars);
+        }
+        if (rest && lines.length < maxLines) lines.push(rest);
+        else if (rest) truncated = true;
+        continue;
+      }
+      truncated = true;
+      break;
+    }
+
+    if (truncated) {
+      const last = lines.length - 1;
+      lines[last] = `${lines[last].slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
+    }
+    return lines.filter(Boolean);
+  }
+
+  // Подпись модуля: одна строка, крупный жирный шрифт (12px в CSS), жёстко
+  // центрированная в корпусе. Длинный текст обрезается многоточием — так он
+  // никогда не вылезает за границы модуля, даже у 1P корпуса.
+  function moduleDescriptionMarkup(module, width, baselineY) {
+    const text = typeof module?.description === 'string' ? module.description.trim() : '';
+    if (!text || module.__ghost) return '';
+    const available = Math.max(18, width - 10);
+    // ~7.2 px на символ при 12px bold — консервативная оценка для кириллицы.
+    const maxChars = Math.max(4, Math.floor(available / 7.2));
+    const label = truncateLabel(text, maxChars);
+    return `<text class="module-description" x="${(width / 2).toFixed(1)}" y="${baselineY.toFixed(1)}" text-anchor="middle">${escapeHtml(label)}</text>`;
+  }
+
+  // Подложка ограничена 280 px, поэтому видимая подпись не может быть длиннее
+  // ~34 символов при 12px — иначе текст вылезет за её границы.
+  const WIRE_LABEL_MAX_CHARS = Math.min(
+    MAX_WIRE_LABEL_LENGTH,
+    Math.floor((280 - 22) / 7.4)
+  );
+
+  function wireLabelText(value) {
+    return truncateLabel(String(value || '').trim(), WIRE_LABEL_MAX_CHARS);
+  }
+
+  function wireLabelWidth(text) {
+    // Шрифт 12px: запас на буквы и внутренние отступы подложки.
+    return clamp(wireLabelText(text).length * 7.4 + 22, 34, 280);
+  }
+
+  // Маркировка провода: горизонтальная подпись ровно по центру провода.
+  // <rect> — подложка цвета холста, чтобы линия не перечёркивала буквы;
+  // <text> — сам текст. Никакого вращения вместе с полилинией нет.
+  function wireLabelMarkup(connection, badgeX, badgeY) {
+    const text = typeof connection?.label === 'string' ? connection.label.trim() : '';
+    if (!text) return '';
+    const label = wireLabelText(text);
+    const width = wireLabelWidth(text);
+    return `
+      <g class="wire-label" data-connection-id="${escapeHtml(connection.id)}"
+         transform="translate(${badgeX.toFixed(1)} ${badgeY.toFixed(1)})">
+        <rect class="wire-label-bg" x="${(-width / 2).toFixed(1)}" y="-10"
+              width="${width.toFixed(1)}" height="20" rx="6"/>
+        <text class="wire-label-text" x="0" y="4">${escapeHtml(label)}</text>
+      </g>`;
   }
 
   function wireDisplayColor(type) {
@@ -1508,14 +1726,15 @@
       type: libraryItem.type,
       name: libraryItem.name,
       width: libraryItem.width,
-      order: 0,
+      slot: 0,
       color: libraryItem.color,
       ports: portsForModule(libraryItem),
       isBusbar: libraryItem.isBusbar === true,
       busType: libraryItem.busType || null,
       busbarType: libraryItem.busType || libraryItem.busbarType || null,
       tag: tag || generateTag(libraryItem.tagPrefix, project ? allModules() : []),
-      isOn: true
+      isOn: true,
+      description: ''
     };
   }
 
@@ -1530,22 +1749,26 @@
       ['terminal', 'XT1']
     ];
 
-    demo.rails[0].modules = demoItems.map(([libraryId, tag], index) => {
+    let demoSlot = 0;
+    demo.rails[0].modules = demoItems.map(([libraryId, tag]) => {
       const libraryItem = LIBRARY_BY_ID.get(libraryId);
+      const slot = demoSlot;
+      demoSlot += libraryItem.width;
       return {
         id: makeId('mod'),
         libraryId: libraryItem.id,
         type: libraryItem.type,
         name: libraryItem.name,
         width: libraryItem.width,
-        order: index,
+        slot,
         color: libraryItem.color,
         ports: portsForModule(libraryItem),
         isBusbar: libraryItem.isBusbar === true,
         busType: libraryItem.busType || null,
         busbarType: libraryItem.busType || libraryItem.busbarType || null,
         tag,
-        isOn: true
+        isOn: true,
+        description: ''
       };
     });
 
@@ -1574,16 +1797,26 @@
       toPortIndex,
       toRailId: toModule.isPowerSource ? null : demo.rails[0].id,
       type,
-      color: WIRE_TYPES[type].color
+      color: WIRE_TYPES[type].color,
+      label: ''
     }));
 
     return demo;
   }
 
-  function normalizeOrders() {
+  // Приводит слоты модулей к корректным значениям: без выхода за рейку
+  // и без наложений. Вызывается после всех структурных изменений.
+  function normalizeSlots() {
     project.rails.forEach((rail) => {
-      rail.modules.forEach((module, index) => {
-        module.order = index;
+      const used = new Set();
+      rail.modules.forEach((module) => {
+        let slot = clampSlot(rail, module.slot, module.width);
+        if (!rangeIsFree(used, slot, module.width)) {
+          const free = firstFreeSlot(used, module.width, rail.capacity);
+          slot = free === null ? clampSlot(rail, module.slot, module.width) : free;
+        }
+        module.slot = slot;
+        for (let offset = 0; offset < module.width; offset += 1) used.add(slot + offset);
       });
     });
   }
@@ -1614,11 +1847,32 @@
       rememberTags(flatModules);
     }
 
-    function normalizeModules(rawModules) {
+    function normalizeModules(rawModules, railCapacity = capacity) {
       const modules = [];
-      let widthTotal = 0;
+      const usedSlots = new Set();
+      const limit = clamp(Math.round(railCapacity) || capacity, MIN_RAIL_CAPACITY, MAX_RAIL_CAPACITY);
 
-      for (const rawModule of rawModules) {
+      // Миграция v4 -> v5: если у модулей есть slot — используем его.
+      // Иначе восстанавливаем слоты из order: order 0 -> 0,
+      // order 1 -> 0 + ширина предыдущего, и т.д. (зазоры в старых
+      // проектах отсутствовали, поэтому это однозначное преобразование).
+      const hasExplicitSlots = rawModules.some((item) => item && Number.isInteger(item.slot));
+      const source = hasExplicitSlots
+        ? rawModules.slice()
+        : rawModules
+            .map((item, index) => ({ item, index }))
+            .sort((a, b) => {
+              const aOrder = Number(a.item?.order);
+              const bOrder = Number(b.item?.order);
+              if (Number.isFinite(aOrder) && Number.isFinite(bOrder) && aOrder !== bOrder) {
+                return aOrder - bOrder;
+              }
+              return a.index - b.index;
+            })
+            .map((entry) => entry.item);
+      let legacyCursor = 0;
+
+      for (const rawModule of source) {
         if (!rawModule || typeof rawModule !== 'object') continue;
 
         const rawLibraryId = safeText(rawModule.libraryId, '', 40);
@@ -1628,7 +1882,19 @@
           ? clamp(Math.round(parsedWidth), 1, 6)
           : (libraryItem?.width || 1);
 
-        if (widthTotal + width > capacity) break;
+        let slot;
+        if (hasExplicitSlots) {
+          const parsedSlot = Number(rawModule.slot);
+          slot = Number.isInteger(parsedSlot)
+            ? clamp(parsedSlot, 0, Math.max(0, limit - width))
+            : null;
+          if (slot === null || !rangeIsFree(usedSlots, slot, width)) {
+            slot = firstFreeSlot(usedSlots, width, limit);
+          }
+        } else {
+          slot = legacyCursor;
+        }
+        if (slot === null || slot + width > limit) break;
 
         let id = safeId(rawModule.id);
         if (!id || usedIds.has(id)) id = makeId('mod');
@@ -1653,13 +1919,14 @@
         const ports = portsForModule({ ports: rawModule.ports, libraryId, width });
 
         usedIds.add(id);
+        for (let offset = 0; offset < width; offset += 1) usedSlots.add(slot + offset);
         const module = {
           id,
           libraryId,
           type,
           name,
           width,
-          order: modules.length,
+          slot,
           color,
           ports,
           isBusbar: rawModule.isBusbar === true || libraryItem?.isBusbar === true,
@@ -1667,11 +1934,12 @@
           busbarType: rawModule.busType || rawModule.busbarType ||
             libraryItem?.busType || libraryItem?.busbarType || null,
           tag,
-          isOn: rawModule.isOn !== false
+          isOn: rawModule.isOn !== false,
+          description: safeText(rawModule.description, '', MAX_MODULE_DESCRIPTION_LENGTH)
         };
         modules.push(module);
         normalizedModules.push(module);
-        widthTotal += width;
+        if (!hasExplicitSlots) legacyCursor = slot + width;
       }
       return modules;
     }
@@ -1685,12 +1953,15 @@
         usedRailIds.add(id);
         const parsedCapacity = Number(rawRail?.capacity);
         const railCapacity = Number.isFinite(parsedCapacity)
-          ? clamp(Math.round(parsedCapacity), 1, capacity)
+          ? clamp(Math.round(parsedCapacity), MIN_RAIL_CAPACITY, MAX_RAIL_CAPACITY)
           : capacity;
         rails.push({
           id,
           capacity: railCapacity,
-          modules: normalizeModules(Array.isArray(rawRail?.modules) ? rawRail.modules : [])
+          modules: normalizeModules(
+            Array.isArray(rawRail?.modules) ? rawRail.modules : [],
+            railCapacity
+          )
         });
       }
     } else {
@@ -1768,7 +2039,8 @@
         toPortIndex,
         toRailId: railLookup.get(toModuleId) || null,
         type,
-        color: WIRE_TYPES[type].color
+        color: WIRE_TYPES[type].color,
+        label: safeText(rawConnection.label, '', MAX_WIRE_LABEL_LENGTH)
       });
     }
 
@@ -1865,7 +2137,14 @@
       if (!normalized) throw new Error('Invalid project data');
       project = normalized;
 
-      if (needsWireMigration) showMigrationBanner = true;
+      if (needsWireMigration) {
+        showMigrationBanner = true;
+        migrationNotice = MIGRATION_NOTICE;
+      } else if (needsSchemaMigration) {
+        // v4 -> v5: order заменён на slot, пустые места теперь сохраняются.
+        showMigrationBanner = true;
+        migrationNotice = 'Проект обновлён: порядок модулей заменён слотами, пустые места сохраняются';
+      }
       if (needsWireMigration || needsTagMigration || needsSchemaMigration || needsSwitchMigration) persistProject();
       else setSaveState('saved');
     } catch (error) {
@@ -2085,9 +2364,12 @@
     const channelTop = moduleY - 6;
     const channelBottom = moduleY + MODULE_HEIGHT + 8;
     const channelX = 60;
-    const channelWidth = 896;
-    const scaleY = railY + RAIL.height + 12;
     const capacity = rail.capacity;
+    const width = railWidth(capacity);
+    const right = RAIL.x + width;
+    const scaleRight = railModuleRight(capacity);
+    const channelWidth = width - 20;
+    const scaleY = railY + RAIL.height + 12;
     const slotLines = [];
     const scaleTicks = [];
     const scaleLabels = [];
@@ -2116,10 +2398,45 @@
         <path class="rail-screw-cross" d="M -3.4 0 H 3.4 M 0 -3.4 V 3.4" transform="rotate(18)"/>
       </g>`;
 
+    // Единый блок управления длиной рейки: [-] N [+].
+    // Обе кнопки и текущая вместимость собраны вместе и стоят слева от
+    // начала шкалы — левее первого посадочного места (RAIL.moduleX).
+    // Координаты блока фиксированы относительно левого края рейки и НЕ
+    // зависят от capacity: при изменении длины шкала расширяется вправо,
+    // а кнопки остаются на месте и не перекрывают первый модуль, даже
+    // когда рейка пуста. Увеличенная зона захвата (r=16) помогает нажимать
+    // на кнопки и при уменьшении масштаба — блок масштабируется вместе
+    // с рейкой, поэтому не «съезжает» относительно неё.
+    const controlY = scaleY + 4;
+    const controlLeft = 2;
+    const controlWidth = 70;
+    const controlHeight = 26;
+    const minusX = controlLeft + 14;
+    const plusX = controlLeft + controlWidth - 14;
+    const valueX = controlLeft + controlWidth / 2;
+
+    const capacityButton = (action, x, label, disabled) => `
+      <g class="rail-cap-btn rail-cap-btn--${action}${disabled ? ' is-disabled' : ''}"
+         data-rail-capacity="${action}" data-rail-id="${escapeHtml(rail.id)}"
+         transform="translate(${x} ${controlY})" tabindex="0" role="button"
+         aria-label="${escapeHtml(label)}"${disabled ? ' aria-disabled="true"' : ''}>
+        <circle class="rail-cap-hit" r="16"/>
+        <rect class="rail-cap-bg" x="-10" y="-10" width="20" height="20" rx="6"/>
+        <path class="rail-cap-icon" d="M -4 0 H 4${action === 'increase' ? ' M 0 -4 V 4' : ''}"/>
+      </g>`;
+    const capacityControls = `
+      <g class="rail-cap-control" aria-label="${escapeHtml(`Длина рейки ${railIndex + 1}`)}">
+        <rect class="rail-cap-control-bg" x="${controlLeft}" y="${controlY - controlHeight / 2}"
+              width="${controlWidth}" height="${controlHeight}" rx="${controlHeight / 2}"/>
+        <text class="rail-cap-control-value" x="${valueX}" y="${controlY + 3.4}">${capacity}P</text>
+        ${capacityButton('decrease', minusX, `Укоротить рейку ${railIndex + 1}`, capacity <= MIN_RAIL_CAPACITY)}
+        ${capacityButton('increase', plusX, `Удлинить рейку ${railIndex + 1}`, capacity >= MAX_RAIL_CAPACITY)}
+      </g>`;
+
     const canDelete = rail.modules.length === 0 && project.rails.length > 1;
     const deleteButton = canDelete ? `
       <g class="rail-delete" data-delete-rail="${escapeHtml(rail.id)}"
-         transform="translate(${RAIL.x + RAIL.width - 62} ${railY + 26})"
+         transform="translate(${right - 62} ${railY + 26})"
          tabindex="0" role="button" aria-label="${escapeHtml(`Удалить пустую рейку ${railIndex + 1}`)}">
         <circle class="rail-delete-hit" r="15"/>
         <circle class="rail-delete-bg" r="10"/>
@@ -2129,45 +2446,46 @@
     return `
       <g class="rail${isDropTarget ? (overflow ? ' is-overflow' : ' is-drop-target') : ''}"
          data-rail-id="${escapeHtml(rail.id)}" data-rail-index="${railIndex}">
-        <text class="rail-label" x="${RAIL.x + 4}" y="${railY - 9}">Рейка ${railIndex + 1}</text>
-        <rect class="rail-plate" x="${RAIL.x}" y="${railY}" width="${RAIL.width}" height="${RAIL.height}"
+        <text class="rail-label" x="${RAIL.x + 4}" y="${railY - 9}">Рейка ${railIndex + 1} · ${capacity} P</text>
+        <rect class="rail-plate" x="${RAIL.x}" y="${railY}" width="${width}" height="${RAIL.height}"
               rx="18" filter="url(#rail-shadow)"/>
         <line class="rail-profile-highlight" x1="${RAIL.x + 19}" y1="${railY + 1.5}"
-              x2="${RAIL.x + RAIL.width - 19}" y2="${railY + 1.5}"/>
+              x2="${right - 19}" y2="${railY + 1.5}"/>
         <line class="rail-profile-shadow" x1="${RAIL.x + 19}" y1="${railY + RAIL.height - 1.5}"
-              x2="${RAIL.x + RAIL.width - 19}" y2="${railY + RAIL.height - 1.5}"/>
+              x2="${right - 19}" y2="${railY + RAIL.height - 1.5}"/>
         <line class="rail-profile-side" x1="${RAIL.x + 1.4}" y1="${railY + 20}"
               x2="${RAIL.x + 1.4}" y2="${railY + RAIL.height - 20}"/>
-        <line class="rail-profile-side" x1="${RAIL.x + RAIL.width - 1.4}" y1="${railY + 20}"
-              x2="${RAIL.x + RAIL.width - 1.4}" y2="${railY + RAIL.height - 20}"/>
+        <line class="rail-profile-side" x1="${right - 1.4}" y1="${railY + 20}"
+              x2="${right - 1.4}" y2="${railY + RAIL.height - 20}"/>
         <line class="rail-groove" x1="${RAIL.x + 24}" y1="${railY + 18}"
-              x2="${RAIL.x + RAIL.width - 24}" y2="${railY + 18}"/>
+              x2="${right - 24}" y2="${railY + 18}"/>
         <line class="rail-groove-light" x1="${RAIL.x + 24}" y1="${railY + 17}"
-              x2="${RAIL.x + RAIL.width - 24}" y2="${railY + 17}"/>
+              x2="${right - 24}" y2="${railY + 17}"/>
         <line class="rail-groove" x1="${RAIL.x + 24}" y1="${railY + RAIL.height - 18}"
-              x2="${RAIL.x + RAIL.width - 24}" y2="${railY + RAIL.height - 18}"/>
+              x2="${right - 24}" y2="${railY + RAIL.height - 18}"/>
         <line class="rail-groove-light" x1="${RAIL.x + 24}" y1="${railY + RAIL.height - 19}"
-              x2="${RAIL.x + RAIL.width - 24}" y2="${railY + RAIL.height - 19}"/>
-        <rect class="rail-perforation" x="${RAIL.x}" y="${railY}" width="${RAIL.width}" height="${channelTop - railY}"
+              x2="${right - 24}" y2="${railY + RAIL.height - 19}"/>
+        <rect class="rail-perforation" x="${RAIL.x}" y="${railY}" width="${width}" height="${channelTop - railY}"
               fill="url(#rail-holes)"/>
-        <rect class="rail-perforation" x="${RAIL.x}" y="${channelBottom}" width="${RAIL.width}"
+        <rect class="rail-perforation" x="${RAIL.x}" y="${channelBottom}" width="${width}"
               height="${railY + RAIL.height - channelBottom}" fill="url(#rail-holes)"/>
         <rect class="rail-channel" x="${channelX}" y="${channelTop}" width="${channelWidth}" height="${channelBottom - channelTop}" rx="7"/>
         <line class="rail-metal-edge" x1="${channelX + 5}" y1="${channelTop + 2}" x2="${channelX + channelWidth - 5}" y2="${channelTop + 2}"/>
         <line class="rail-metal-edge" x1="${channelX + 5}" y1="${channelBottom - 2}" x2="${channelX + channelWidth - 5}" y2="${channelBottom - 2}"/>
         ${slotLines.join('')}
         ${screwMarkup(62, railY + 22)}
-        ${screwMarkup(954, railY + 22)}
+        ${screwMarkup(right - 12, railY + 22)}
         ${screwMarkup(62, railY + RAIL.height - 22)}
-        ${screwMarkup(954, railY + RAIL.height - 22)}
-        <text class="rail-dimension" x="984" y="${railY + 133}" transform="rotate(90 984 ${railY + 133})">DIN 35 mm</text>
+        ${screwMarkup(right - 12, railY + RAIL.height - 22)}
+        <text class="rail-dimension" x="${right + 18}" y="${railY + 133}" transform="rotate(90 ${right + 18} ${railY + 133})">DIN 35 mm</text>
         <g class="rail-scale">
-          <line class="rail-scale-base" x1="${RAIL.moduleX}" y1="${scaleY}" x2="${RAIL.moduleRight}" y2="${scaleY}"/>
+          <line class="rail-scale-base" x1="${RAIL.moduleX}" y1="${scaleY}" x2="${scaleRight}" y2="${scaleY}"/>
           ${scaleTicks.join('')}
           ${scaleLabels.join('')}
         </g>
         ${overflow ? `<rect class="rail-overflow-outline" x="${channelX - 2}" y="${channelTop - 2}"
                             width="${channelWidth + 4}" height="${channelBottom - channelTop + 4}" rx="10"/>` : ''}
+        ${capacityControls}
         ${deleteButton}
       </g>`;
   }
@@ -2210,9 +2528,13 @@
   }
 
   function corridorX(side, lane) {
-    const base = side === 'left' ? WIRE_CORRIDOR_X.left : WIRE_CORRIDOR_X.right;
+    // Правый коридор следует за правой кромкой холста: при длинной рейке
+    // провода не должны идти сквозь пластину.
+    const base = side === 'left'
+      ? WIRE_CORRIDOR_X.left
+      : Math.max(WIRE_CORRIDOR_X.right, canvasWidth() - 20);
     const shift = lane * CORRIDOR_LANE_GAP * (side === 'left' ? -1 : 1);
-    return clamp(base + shift, 8, SVG_WIDTH - 8);
+    return clamp(base + shift, 8, canvasWidth() - 8);
   }
 
   // Ряды коротких выводов боковых клемм считаются отдельно от коридоров
@@ -2317,7 +2639,7 @@
 
     const targetLane = reserve ? reserveLane(target.side, target.railIndex, span, laneUsage) : 0;
     const yTarget = laneY(target.side, targetLane, target.railIndex);
-    const railCenter = (RAIL.moduleX + RAIL.moduleRight) / 2;
+    const railCenter = railModuleCenter(target.railIndex);
     const side = target.x < railCenter ? 'left' : 'right';
     const corridorLane = reserve
       ? reserveCorridor(side, [Math.min(ySource, yTarget), Math.max(ySource, yTarget)], laneUsage)
@@ -2414,7 +2736,7 @@
       // Разные грани или разные рейки: обходим корпуса сбоку. Вертикальный
       // участок идёт по коридору вне пластины рейки, поэтому провода не
       // накладываются на рейки.
-      const railCenter = (RAIL.moduleX + RAIL.moduleRight) / 2;
+      const railCenter = railModuleCenter(start.railIndex);
       const useLeft = (start.x + end.x) / 2 < railCenter;
       const side = useLeft ? 'left' : 'right';
       const corridorLane = reserve
@@ -2468,15 +2790,23 @@
       const label = connectionLabel(connection);
       const points = polylinePoints(layout.points);
       const badgeWidth = type.label.length > 1 ? 24 : 16;
+      const customLabelText = typeof connection.label === 'string' ? connection.label.trim() : '';
+      const effectiveBadgeWidth = customLabelText ? wireLabelWidth(customLabelText) : badgeWidth;
       const badgeX = layout.badge.x;
       const badgeY = layout.badge.y;
       // У чёрного L2 на тёмном холсте нужен светлый контур, иначе линия теряется.
       const outline = typeKey === 'L2'
         ? `<polyline class="wire-outline" points="${points}"/>`
         : '';
+      const customLabel = wireLabelMarkup(connection, badgeX, badgeY);
+      const typeBadge = customLabel ? '' : `
+          <g class="wire-badge" transform="translate(${badgeX.toFixed(1)} ${badgeY.toFixed(1)})" pointer-events="none">
+            <rect x="${-badgeWidth / 2}" y="-9" width="${badgeWidth}" height="18" rx="9" fill="${color}"/>
+            <text class="${tagTextClass(color)}" x="0" y="3.4">${type.label}</text>
+          </g>`;
       const deleteButton = isSelected ? `
         <g class="wire-delete" data-delete-wire="${escapeHtml(connection.id)}"
-           transform="translate(${(badgeX + badgeWidth / 2 + 14).toFixed(1)} ${badgeY.toFixed(1)})"
+           transform="translate(${(badgeX + effectiveBadgeWidth / 2 + 10).toFixed(1)} ${badgeY.toFixed(1)})"
            tabindex="0" role="button"
            aria-label="${escapeHtml(`Удалить провод ${label}`)}">
           <circle class="wire-delete-hit" r="13"/>
@@ -2488,16 +2818,14 @@
         <g class="wire wire--${typeKey.toLowerCase()}${isSelected ? ' is-selected' : ''}${flowClass}"
            data-wire-id="${escapeHtml(connection.id)}"
            style="--wire-color:${color};color:${color}">
-          <title>${escapeHtml(`${label}. ${type.name}. ${connection.isLive ? 'Под напряжением. ' : ''}Двойной клик удаляет провод.`)}</title>
+          <title>${escapeHtml(`${label}. ${type.name}. ${connection.isLive ? 'Под напряжением. ' : ''}Двойной клик — маркировка провода.`)}</title>
           <polyline class="wire-halo" points="${points}" data-connection-id="${escapeHtml(connection.id)}"
                     tabindex="0" role="button"
-                    aria-label="${escapeHtml(`${label}, ${type.name}. Enter — выделить, Delete — удалить.`)}"/>
+                    aria-label="${escapeHtml(`${label}, ${type.name}. Enter — выделить, Delete — удалить, двойной клик — маркировка.`)}"/>
           ${outline}
           <polyline class="wire-path" points="${points}"/>
-          <g class="wire-badge" transform="translate(${badgeX.toFixed(1)} ${badgeY.toFixed(1)})" pointer-events="none">
-            <rect x="${-badgeWidth / 2}" y="-9" width="${badgeWidth}" height="18" rx="9" fill="${color}"/>
-            <text class="${tagTextClass(color)}" x="0" y="3.4">${type.label}</text>
-          </g>
+          ${customLabel}
+          ${typeBadge}
           ${deleteButton}
         </g>`;
     }).join('');
@@ -2797,7 +3125,7 @@
     const interactiveAttributes = isGhost
       ? 'aria-hidden="true"'
       : `tabindex="0" role="group"
-         aria-label="${escapeHtml(`${module.tag}: ${module.name}, ширина ${module.width} ${modulesWord}. Шина ${busType} с ${screwCount} клеммами сверху и снизу. Перетаскивание меняет порядок; порты создают провода только типа ${busType}.`)}"`;
+         aria-label="${escapeHtml(`${module.tag}: ${module.name}, ширина ${module.width} ${modulesWord}. Шина ${busType} с ${screwCount} клеммами сверху и снизу. Перетаскивание меняет слот; порты создают провода только типа ${busType}.`)}"`;
 
     return `
       <g class="module module--busbar module--busbar-${typeClass}${isGhost ? ' module--ghost' : ''}${isInvalidGhost ? ' module--ghost-invalid' : ''}${isPending ? ' is-pending' : ''}${isLive ? ' is-bus-live' : ''}"
@@ -2812,6 +3140,7 @@
         ${screwMarkup}
         <text class="busbar-label" x="${width / 2}" y="${MODULE_HEIGHT / 2 - 2}">${label}</text>
         <text class="busbar-sublabel" x="${width / 2}" y="${MODULE_HEIGHT / 2 + 17}">${sublabel}</text>
+        ${moduleDescriptionMarkup(module, width, MODULE_HEIGHT - 34)}
         <g class="busbar-tag" transform="translate(${width / 2 - 23} 31)">
           <rect x="0" y="0" width="46" height="16" rx="4"/>
           <text x="23" y="11.5">${escapeHtml(module.tag)}</text>
@@ -2862,7 +3191,7 @@
     const interactiveAttributes = isGhost
       ? 'aria-hidden="true"'
       : `tabindex="0" role="group"
-         aria-label="${escapeHtml(`${module.tag}: ${module.name}, ширина 1 модуль. Шина ${busType} с ${terminalCount} клеммами ${sideWord}. Перетаскивание меняет порядок; порты создают провода только типа ${busType}.`)}"`;
+         aria-label="${escapeHtml(`${module.tag}: ${module.name}, ширина 1 модуль. Шина ${busType} с ${terminalCount} клеммами ${sideWord}. Перетаскивание меняет слот; порты создают провода только типа ${busType}.`)}"`;
 
     return `
       <g class="module module--side-busbar module--side-busbar-${typeClass}${isGhost ? ' module--ghost' : ''}${isInvalidGhost ? ' module--ghost-invalid' : ''}${isPending ? ' is-pending' : ''}${isLive ? ' is-bus-live' : ''}"
@@ -2881,6 +3210,7 @@
         <line class="side-busbar-plate-edge" x1="${plateX + 2}" y1="10" x2="${plateX + 2}"
               y2="${MODULE_HEIGHT - 10}"/>
         <text class="side-busbar-label side-busbar-label--${typeClass}" x="${width / 2}" y="${labelY}">${busType}</text>
+        ${moduleDescriptionMarkup(module, width, MODULE_HEIGHT - 48)}
         <text class="module-width" x="${widthX}" y="${MODULE_HEIGHT - 8}">1P</text>
         ${deleteButton}
         <rect class="module-focus-ring" x="-4" y="-4" width="${width + 8}" height="${MODULE_HEIGHT + 8}"
@@ -2996,7 +3326,7 @@
     const interactiveAttributes = isGhost
       ? 'aria-hidden="true"'
       : `tabindex="0" role="group"
-         aria-label="${escapeHtml(`${module.tag}: ${module.name}, ширина ${module.width} ${modulesWord}.${switchable ? ` Сейчас ${isOn ? 'включён' : 'отключён'}.` : ''} Перетаскивание меняет порядок; порты сверху и снизу создают провода.`)}"`;
+         aria-label="${escapeHtml(`${module.tag}: ${module.name}, ширина ${module.width} ${modulesWord}.${switchable ? ` Сейчас ${isOn ? 'включён' : 'отключён'}.` : ''} Перетаскивание меняет слот; порты сверху и снизу создают провода.`)}"`;
 
     return `
       <g class="module module--body-${bodyVariant}${isGhost ? ' module--ghost' : ''}${isInvalidGhost ? ' module--ghost-invalid' : ''}${isPending ? ' is-pending' : ''}"
@@ -3012,14 +3342,15 @@
         <text class="module-band-text ${tagTextClass(color)}" x="${width / 2}" y="${bandHeight - 9}">${escapeHtml(module.tag)}</text>
         ${switchMarkup}
         ${circuit}
-        <text class="module-rating" x="${panelCenterX.toFixed(1)}" y="${MODULE_HEIGHT - 42}">${escapeHtml(rating)}</text>
-        <text class="module-brand" x="${panelCenterX.toFixed(1)}" y="${MODULE_HEIGHT - 32}">${escapeHtml(brand)}</text>
+        <text class="module-rating" x="${panelCenterX.toFixed(1)}" y="${MODULE_HEIGHT - 50}">${escapeHtml(rating)}</text>
+        <text class="module-brand" x="${panelCenterX.toFixed(1)}" y="${MODULE_HEIGHT - 41}">${escapeHtml(brand)}</text>
+        ${moduleDescriptionMarkup(module, width, MODULE_HEIGHT - 28)}
         <text class="module-name${verticalName ? ' is-vertical' : ''}${switchable && verticalName ? ' is-switch-vertical' : ''}"
               ${verticalName ? `transform="${nameTransform}"` : `x="${width / 2}" y="${nameY}"`}>${escapeHtml(nameText)}</text>
-        <rect class="module-terminal-panel" x="1" y="${MODULE_HEIGHT - 30}" width="${width - 2}" height="29" rx="5"/>
-        <line class="module-divider" x1="7" y1="${MODULE_HEIGHT - 25}" x2="${width - 7}" y2="${MODULE_HEIGHT - 25}"/>
+        <rect class="module-terminal-panel" x="1" y="${MODULE_HEIGHT - 22}" width="${width - 2}" height="21" rx="5"/>
+        <line class="module-divider" x1="7" y1="${MODULE_HEIGHT - 19}" x2="${width - 7}" y2="${MODULE_HEIGHT - 19}"/>
         ${terminalMarkup}
-        <text class="module-width" x="7" y="${MODULE_HEIGHT - 9}">${widthLabel}</text>
+        <text class="module-width" x="7" y="${MODULE_HEIGHT - 7}">${widthLabel}</text>
         ${deleteButton}
         <rect class="module-focus-ring" x="-4" y="-4" width="${width + 8}" height="${MODULE_HEIGHT + 8}"
               rx="13" fill="none" stroke="${color}"/>
@@ -3033,10 +3364,21 @@
       modules: rail.modules.slice(),
       ghostId: null,
       overflow: false,
+      ghostInvalid: false,
       required: usedWidth(rail),
-      dropIndex: null
+      dropSlot: null
     }));
-    const idle = () => ({ rails, ghostId: null, overRail: false, activeRailId: null, overflow: false, required: 0 });
+    const idle = () => ({
+      rails,
+      ghostId: null,
+      overRail: false,
+      activeRailId: null,
+      overflow: false,
+      collision: false,
+      dropSlot: null,
+      dropWidth: 0,
+      required: 0
+    });
 
     if (!dragState || !dragState.overRail) return idle();
     const targetRail = railById(dragState.targetRailId);
@@ -3058,28 +3400,37 @@
         type: libraryItem.type,
         name: libraryItem.name,
         width: libraryItem.width,
-        order: -1,
+        slot: 0,
         color: libraryItem.color,
         ports: portsForModule(libraryItem),
         isOn: true,
         isBusbar: libraryItem.isBusbar === true,
         busType: libraryItem.busType || null,
         busbarType: libraryItem.busType || libraryItem.busbarType || null,
-        tag: dragState.ghostTag || generateTag(libraryItem.tagPrefix, allModules())
+        tag: dragState.ghostTag || generateTag(libraryItem.tagPrefix, allModules()),
+        description: ''
       };
     }
+
+    const excludedId = dragState.kind === 'reorder' ? dragState.moduleId : null;
+    const dropSlot = dragState.dropSlot;
+    const collision = !canPlaceModule(targetRail, dropSlot, dragState.width, excludedId);
+    ghost.slot = dropSlot;
+    ghost.__ghostInvalid = collision;
 
     for (const item of rails) {
       if (dragState.kind === 'reorder') {
         item.modules = item.modules.filter((module) => module.id !== dragState.moduleId);
       }
       if (item.rail.id === targetRail.id) {
-        const index = clamp(dragState.dropIndex ?? item.modules.length, 0, item.modules.length);
-        item.modules.splice(index, 0, ghost);
-        item.dropIndex = index;
+        item.modules.push(ghost);
+        item.dropSlot = dropSlot;
         item.ghostId = ghost.id;
+        item.ghostInvalid = collision;
       }
-      item.required = sumWidths(item.modules);
+      item.required = item.modules.reduce(
+        (max, module) => Math.max(max, module.slot + module.width), 0
+      );
       item.overflow = item.required > item.rail.capacity;
     }
 
@@ -3090,6 +3441,9 @@
       overRail: true,
       activeRailId: targetRail.id,
       overflow: Boolean(active?.overflow),
+      collision,
+      dropSlot,
+      dropWidth: dragState.width,
       required: active?.required || 0,
       capacity: targetRail.capacity
     };
@@ -3098,7 +3452,7 @@
   /* --------------------------- Zoom / Pan ----------------------------- */
 
   function baseCanvasSize() {
-    return { width: SVG_WIDTH, height: canvasHeight() };
+    return { width: canvasWidth(), height: canvasHeight() };
   }
 
   // Текущая область просмотра в координатах схемы.
@@ -3233,11 +3587,13 @@
   }
 
   function zoomByStep(factor) {
+    if (editing) commitInlineEdit();
     const rect = dom.canvas.getBoundingClientRect();
     zoomAtClient(rect.left + rect.width / 2, rect.top + rect.height / 2, factor);
   }
 
   function resetView() {
+    if (editing) commitInlineEdit();
     viewState.x = 0;
     viewState.y = 0;
     viewState.zoom = 1;
@@ -3246,6 +3602,8 @@
 
   function onCanvasWheel(event) {
     if (!project) return;
+    // Зум во время ввода закрывает поле, сохраняя текст (как blur).
+    if (editing) commitInlineEdit();
     event.preventDefault();
     const rect = dom.canvas.getBoundingClientRect();
     const unit = event.deltaMode === 1 ? 16
@@ -3261,6 +3619,8 @@
   // mousemove / mouseup (и mouseleave для ухода курсора за окно).
   function startPan(event, pointerId = null) {
     if (panState || gesture || dragState) return false;
+    // Панорамирование (средняя кнопка / Пробел) сохраняет введённую подпись.
+    if (editing) commitInlineEdit();
 
     // Фиксируем матрицу на старте жеста: пока viewBox меняется, она остаётся
     // прежней. Разница в координатах схемы точно равна смещению холста, а сама
@@ -3370,21 +3730,37 @@
   }
 
   function updateCanvasSize() {
+    const width = canvasWidth();
     const height = canvasHeight();
+    if (dom.canvasSurface) dom.canvasSurface.setAttribute('width', String(width));
     if (dom.canvasSurface) dom.canvasSurface.setAttribute('height', String(height));
+    if (dom.canvasGrid) dom.canvasGrid.setAttribute('width', String(width));
     if (dom.canvasGrid) dom.canvasGrid.setAttribute('height', String(height));
     applyView();
+  }
+
+  // Подсветка целевых слотов при перетаскивании: показываем, куда именно
+  // встанет модуль. Красная — если место занято (перенос будет отменён).
+  function buildSlotHighlight(preview) {
+    if (!preview.overRail || !Number.isInteger(preview.dropSlot)) return '';
+    const railIndex = preview.rails.findIndex((item) => item.rail.id === preview.activeRailId);
+    if (railIndex < 0) return '';
+    const x = moduleSlotX(preview.dropSlot);
+    const y = railModuleY(railIndex);
+    return `<rect class="rail-slot-highlight${preview.collision ? ' is-invalid' : ''}" ` +
+      `x="${x}" y="${y - 5}" width="${preview.dropWidth * MODULE_UNIT}" ` +
+      `height="${MODULE_HEIGHT + 10}" rx="9"/>`;
   }
 
   function renderCanvas() {
     const preview = buildPreview();
     const overRail = preview.overRail;
-    const overflow = preview.overflow;
+    const invalid = preview.collision || preview.overflow;
 
-    dom.canvas.classList.toggle('is-overflow', overflow);
-    dom.canvas.classList.toggle('is-drop-target', overRail && !overflow);
+    dom.canvas.classList.toggle('is-overflow', invalid);
+    dom.canvas.classList.toggle('is-drop-target', overRail && !invalid);
     dom.canvas.classList.toggle('is-connecting', Boolean(activePort));
-    dom.canvasShell.classList.toggle('is-drop-target', overRail && !overflow);
+    dom.canvasShell.classList.toggle('is-drop-target', overRail && !invalid);
     dom.canvasShell.classList.toggle('is-connecting', Boolean(activePort));
     updateCanvasSize();
 
@@ -3392,22 +3768,25 @@
       .map((item, index) => buildRailMarkup(
         item.rail,
         index,
-        item.overflow,
+        item.overflow || Boolean(item.ghostInvalid),
         overRail && item.rail.id === preview.activeRailId
       ))
-      .join('');
+      .join('') + buildSlotHighlight(preview);
 
     const positions = new Map();
     const previewModules = [];
     let globalIndex = 0;
     const moduleMarkup = preview.rails.map((item, railIndex) => {
       const moduleY = railModuleY(railIndex);
-      let cursor = RAIL.moduleX;
-      return item.modules.map((module) => {
+      const ordered = item.modules.slice().sort((a, b) => a.slot - b.slot);
+      return ordered.map((module) => {
         const width = module.width * MODULE_UNIT;
+        // X модуля вычисляется из слота, а не из накопленной ширины:
+        // пустые слоты между модулями остаются пустыми.
+        const x = moduleSlotX(module.slot);
         positions.set(module.id, {
-          x: cursor,
-          center: cursor + width / 2,
+          x,
+          center: x + width / 2,
           width,
           y: moduleY,
           railId: item.rail.id,
@@ -3416,11 +3795,10 @@
         });
         previewModules.push(module);
         const markup = buildModuleMarkup(
-          module, cursor, globalIndex,
-          Boolean(module.__ghost) && item.overflow, moduleY
+          module, x, globalIndex,
+          Boolean(module.__ghostInvalid), moduleY
         );
         globalIndex += 1;
-        cursor += width;
         return markup;
       }).join('');
     }).join('');
@@ -3436,11 +3814,15 @@
     if (dom.portPhaseTooltip) dom.portPhaseTooltip.hidden = true;
     positionOverlays();
 
-    const showAlert = overRail && overflow;
+    const showAlert = overRail && invalid;
     dom.railAlert.hidden = !showAlert;
     if (showAlert) {
-      const missing = Math.max(1, preview.required - preview.capacity);
-      dom.railAlertText.textContent = `Не помещается: не хватает ${missing} P`;
+      if (preview.collision) {
+        dom.railAlertText.textContent = 'Место занято — перенос невозможен';
+      } else {
+        const missing = Math.max(1, preview.required - preview.capacity);
+        dom.railAlertText.textContent = `Не помещается: не хватает ${missing} P`;
+      }
     }
 
     dom.emptyState.hidden = !(allModules().length === 0 && !overRail);
@@ -3469,6 +3851,7 @@
           color: module.color,
           count: 0,
           tags: [],
+          descriptions: [],
           switchable: false,
           onCount: 0,
           offCount: 0
@@ -3477,6 +3860,8 @@
       const group = grouped.get(key);
       group.count += 1;
       if (module.tag) group.tags.push(module.tag);
+      const description = typeof module.description === 'string' ? module.description.trim() : '';
+      if (description && !group.descriptions.includes(description)) group.descriptions.push(description);
       if (moduleHasSwitch(module)) {
         group.switchable = true;
         if (module.isOn === false) group.offCount += 1;
@@ -3637,6 +4022,7 @@
   }
 
   function renderAll() {
+    closeInlineEditor();
     calculatePowerFlow();
     renderCanvas();
     renderSpecification();
@@ -3684,7 +4070,7 @@
     for (let index = 0; index < project.rails.length; index += 1) {
       const railY = railPlateY(index);
       if (point.x >= RAIL.x - 12 &&
-          point.x <= RAIL.x + RAIL.width + 12 &&
+          point.x <= railRightEdge(project.rails[index].capacity) + 12 &&
           point.y >= railY - 40 &&
           point.y <= railY + RAIL.height + 40) {
         return index;
@@ -3693,48 +4079,42 @@
     return null;
   }
 
-  function computeDropIndex(svgX, modules) {
-    let cursor = RAIL.moduleX;
-    let index = 0;
-    for (let moduleIndex = 0; moduleIndex < modules.length; moduleIndex += 1) {
-      const moduleWidth = modules[moduleIndex].width * MODULE_UNIT;
-      if (svgX >= cursor + moduleWidth / 2) {
-        index = moduleIndex + 1;
-      } else {
-        break;
-      }
-      cursor += moduleWidth;
-    }
-    return index;
-  }
-
   function updateDragPosition(point) {
     if (!dragState) return;
 
     const railIndex = railIndexAtPoint(point);
     const overRail = railIndex !== null;
-    let dropIndex = 0;
-    let fits = false;
+    let dropSlot = 0;
+    let valid = false;
     let targetRailId = null;
 
     if (overRail) {
       const targetRail = project.rails[railIndex];
       targetRailId = targetRail.id;
-      const remaining = targetRail.modules.filter((module) =>
-        dragState.kind !== 'reorder' || module.id !== dragState.moduleId
+      // Прилипаем к ближайшему целому слоту (делению рейки). Смещение захвата
+      // сохраняет положение модуля под курсором относительно точки захвата.
+      dropSlot = slotFromX(
+        point.x,
+        dragState.width,
+        targetRail.capacity,
+        dragState.grabOffsetPx
       );
-      dropIndex = computeDropIndex(point.x, remaining);
-      fits = sumWidths(remaining) + dragState.width <= targetRail.capacity;
+      valid = canPlaceModule(
+        targetRail,
+        dropSlot,
+        dragState.width,
+        dragState.kind === 'reorder' ? dragState.moduleId : null
+      );
     }
 
     const changed = dragState.overRail !== overRail ||
-      dragState.dropIndex !== dropIndex ||
-      dragState.fits !== fits ||
+      dragState.dropSlot !== dropSlot ||
+      dragState.valid !== valid ||
       dragState.targetRailId !== targetRailId;
 
     dragState.overRail = overRail;
-    dragState.dropIndex = dropIndex;
-    dragState.fits = fits;
+    dragState.dropSlot = dropSlot;
+    dragState.valid = valid;
     dragState.targetRailId = targetRailId;
 
     if (changed) scheduleCanvasRender();
@@ -3764,8 +4144,9 @@
         ghostTag: generateTag(libraryItem.tagPrefix, allModules()),
         overRail: false,
         targetRailId: null,
-        dropIndex: 0,
-        fits: false
+        dropSlot: 0,
+        grabOffsetPx: 0,
+        valid: false
       };
     } else {
       const sourceModule = railOfModule(gesture.moduleId)?.module || null;
@@ -3774,6 +4155,11 @@
         return;
       }
       clearConnectionDraft();
+      // Смещение берём от точки нажатия (а не от первого события move),
+      // чтобы модуль оставался под курсором в том же месте, за которое взят.
+      const grabX = Number.isFinite(gesture.startSvgX)
+        ? gesture.startSvgX
+        : (svgPointFromEvent(event)?.x ?? moduleSlotX(sourceModule.slot));
       dragState = {
         kind: 'reorder',
         pointerId: event.pointerId,
@@ -3781,46 +4167,57 @@
         width: sourceModule.width,
         overRail: false,
         targetRailId: null,
-        dropIndex: sourceModule.order,
-        fits: false
+        dropSlot: sourceModule.slot,
+        grabOffsetPx: grabX - moduleSlotX(sourceModule.slot),
+        valid: false
       };
     }
 
     document.body.classList.add('is-dragging');
   }
 
-  function placeLibraryModule(libraryId, index, options = {}) {
+  function reportNoRoom(rail, width) {
+    flashCanvasError();
+    const free = rail.capacity - usedWidth(rail);
+    showToast(
+      `Нет свободного места: нужно ${width} P, свободно ${free} P.`,
+      'error',
+      4000
+    );
+  }
+
+  function placeLibraryModule(libraryId, slot, options = {}) {
     const libraryItem = LIBRARY_BY_ID.get(libraryId);
     if (!libraryItem) return false;
 
     const rail = railById(options.railId) || railWithRoom(libraryItem.width);
     if (!rail) return false;
-    const free = rail.capacity - usedWidth(rail);
-    if (libraryItem.width > free) {
-      flashCanvasError();
-      showToast(
-        `Не помещается: нужно ${libraryItem.width} P, свободно ${free} P.`,
-        'error',
-        4000
-      );
+
+    // При добавлении кликом (без перетаскивания) ищем первое свободное место
+    // в конце рейки; если там нет места — первый подходящий зазор.
+    const targetSlot = Number.isFinite(slot)
+      ? clampSlot(rail, slot, libraryItem.width)
+      : findFreeSlotAtEnd(rail, libraryItem.width);
+    if (targetSlot === null || !canPlaceModule(rail, targetSlot, libraryItem.width)) {
+      reportNoRoom(rail, libraryItem.width);
       return false;
     }
 
     const module = createModuleFromLibrary(libraryItem, options.tag);
-    const insertionIndex = clamp(Number.isFinite(index) ? index : rail.modules.length, 0, rail.modules.length);
-    rail.modules.splice(insertionIndex, 0, module);
-    normalizeOrders();
+    module.slot = targetSlot;
+    rail.modules.push(module);
+    normalizeSlots();
     persistProject();
     commitHistory();
     renderAll();
 
     if (options.toast !== false) {
-      showToast(`Добавлен ${libraryItem.name}`, 'success', 2200);
+      showToast(`Добавлен ${libraryItem.name} · слот ${targetSlot + 1}`, 'success', 2200);
     }
     return true;
   }
 
-  function moveModule(moduleId, targetRailId, targetIndex) {
+  function moveModule(moduleId, targetRailId, targetSlot) {
     const source = railOfModule(moduleId);
     const targetRail = railById(targetRailId);
     if (!source || !targetRail) return false;
@@ -3828,18 +4225,35 @@
     const sourceRail = source.rail;
     const sourceIndex = sourceRail.modules.findIndex((module) => module.id === moduleId);
     if (sourceIndex < 0) return false;
+    const module = sourceRail.modules[sourceIndex];
 
-    const before = project.rails.map((rail) => rail.modules.map((module) => module.id).join(',')).join('|');
-    const [module] = sourceRail.modules.splice(sourceIndex, 1);
-    const safeTarget = clamp(Number.isFinite(targetIndex) ? targetIndex : sourceIndex, 0, targetRail.modules.length);
-    targetRail.modules.splice(safeTarget, 0, module);
-    normalizeOrders();
+    const newSlot = clampSlot(targetRail, targetSlot, module.width);
+    if (sourceRail.id === targetRail.id && module.slot === newSlot) {
+      renderAll();
+      return false;
+    }
+    // Целевые слоты должны быть свободны — иначе перенос отменяется.
+    if (!canPlaceModule(targetRail, newSlot, module.width, moduleId)) {
+      flashCanvasError();
+      showToast('Место занято — модуль остался на прежнем месте.', 'error', 3600);
+      renderAll();
+      return false;
+    }
+
+    const before = project.rails
+      .map((rail) => rail.modules.map((item) => `${item.id}@${item.slot}`).join(',')).join('|');
+    module.slot = newSlot;
+    if (sourceRail.id !== targetRail.id) {
+      sourceRail.modules.splice(sourceIndex, 1);
+      targetRail.modules.push(module);
+    }
     // Привязка проводов к рейке обновляется вместе с модулем.
     project.connections.forEach((connection) => {
       if (connection.fromModuleId === moduleId) connection.fromRailId = targetRail.id;
       if (connection.toModuleId === moduleId) connection.toRailId = targetRail.id;
     });
-    const after = project.rails.map((rail) => rail.modules.map((item) => item.id).join(',')).join('|');
+    const after = project.rails
+      .map((rail) => rail.modules.map((item) => `${item.id}@${item.slot}`).join(',')).join('|');
 
     if (before === after) {
       renderAll();
@@ -3850,6 +4264,48 @@
     commitHistory();
     renderAll();
     return true;
+  }
+
+  // Изменение длины (вместимости) рейки. Укорочение блокируется, если
+  // правый край самого «дальнего» модуля вышел бы за новую вместимость —
+  // иначе модули «выпали» бы за край рейки.
+  function changeRailCapacity(railId, direction) {
+    const rail = railById(railId);
+    if (!rail) return;
+
+    const step = direction > 0 ? RAIL_CAPACITY_STEP : -RAIL_CAPACITY_STEP;
+    const next = rail.capacity + step;
+
+    if (next < MIN_RAIL_CAPACITY) {
+      showToast(`Минимальная длина рейки — ${MIN_RAIL_CAPACITY} P.`, 'error', 3200);
+      return;
+    }
+    if (next > MAX_RAIL_CAPACITY) {
+      showToast(`Максимальная длина рейки — ${MAX_RAIL_CAPACITY} P.`, 'error', 3200);
+      return;
+    }
+
+    if (next < rail.capacity) {
+      const maxEnd = rail.modules.reduce(
+        (max, module) => Math.max(max, module.slot + module.width), 0
+      );
+      if (maxEnd > next) {
+        flashCanvasError();
+        showToast(
+          'Ошибка! На рейке есть модули за пределами новой длины. Удалите или переместите их, чтобы укоротить рейку.',
+          'error',
+          5000
+        );
+        renderAll();
+        return;
+      }
+    }
+
+    rail.capacity = next;
+    clearConnectionDraft();
+    persistProject();
+    commitHistory();
+    renderAll();
   }
 
   function addRail() {
@@ -3910,23 +4366,22 @@
       return;
     }
 
-    if (!finished.fits) {
+    if (!finished.valid) {
       flashCanvasError();
-      const free = targetRail.capacity - usedWidth(targetRail);
-      showToast(`Не помещается на рейку: свободно ${free} P.`, 'error', 4000);
+      showToast('Место занято или выходит за рейку — перенос отменён.', 'error', 3600);
       renderAll();
       return;
     }
 
     if (finished.kind === 'library') {
-      placeLibraryModule(finished.libraryId, finished.dropIndex, {
+      placeLibraryModule(finished.libraryId, finished.dropSlot, {
         railId: finished.targetRailId,
         tag: finished.ghostTag
       });
       return;
     }
 
-    moveModule(finished.moduleId, finished.targetRailId, finished.dropIndex);
+    moveModule(finished.moduleId, finished.targetRailId, finished.dropSlot);
   }
 
   function cancelActiveInteraction() {
@@ -3966,14 +4421,14 @@
     const libraryItem = LIBRARY_BY_ID.get(card.dataset.libraryId);
     if (!libraryItem) return;
     const rail = railWithRoom(libraryItem.width);
-    if (rail) placeLibraryModule(libraryItem.id, rail.modules.length, { railId: rail.id });
+    if (rail) placeLibraryModule(libraryItem.id, null, { railId: rail.id });
   }
 
   function onCanvasPointerDown(event) {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
     if (gesture || dragState) return;
 
-    if (event.target.closest('[data-delete-module], [data-delete-wire], [data-delete-rail], [data-port-id], [data-connection-id], [data-toggle-module], [data-toggle-source]')) {
+    if (event.target.closest('[data-delete-module], [data-delete-wire], [data-delete-rail], [data-rail-capacity], [data-port-id], [data-connection-id], [data-toggle-module], [data-toggle-source]')) {
       return;
     }
 
@@ -3988,12 +4443,16 @@
       moduleElement.focus({ preventScroll: true });
     }
 
+    const startSvg = getSVGCoords(event);
     gesture = {
       kind: 'reorder',
       moduleId,
       pointerId: event.pointerId,
       startX: event.clientX,
-      startY: event.clientY
+      startY: event.clientY,
+      // Точка захвата в координатах схемы — нужна, чтобы «призрак» не
+      // смещался относительно курсора при прилипании к слотам.
+      startSvgX: startSvg ? startSvg.x : null
     };
   }
 
@@ -4029,7 +4488,7 @@
     if (finishedGesture.kind === 'library') {
       const libraryItem = LIBRARY_BY_ID.get(finishedGesture.libraryId);
       const rail = libraryItem ? railWithRoom(libraryItem.width) : project.rails[0];
-      if (rail) placeLibraryModule(finishedGesture.libraryId, rail.modules.length, { railId: rail.id });
+      if (rail) placeLibraryModule(finishedGesture.libraryId, null, { railId: rail.id });
       return;
     }
 
@@ -4133,7 +4592,8 @@
       toPortIndex: pendingWire.index,
       toRailId: railOfModule(pendingWire.moduleId)?.rail.id || null,
       type,
-      color: WIRE_TYPES[type].color
+      color: WIRE_TYPES[type].color,
+      label: ''
     };
 
     project.connections.push(connection);
@@ -4169,6 +4629,22 @@
     renderAll();
   }
 
+  // Выделение провода откладывается, чтобы кнопка × не появлялась между
+  // двумя кликами двойного щелчка и не перехватывала второй клик.
+  function cancelWireSelection() {
+    if (wireSelectTimer === null) return;
+    clearTimeout(wireSelectTimer);
+    wireSelectTimer = null;
+  }
+
+  function scheduleWireSelection(connectionId) {
+    cancelWireSelection();
+    wireSelectTimer = setTimeout(() => {
+      wireSelectTimer = null;
+      selectConnection(connectionId);
+    }, 280);
+  }
+
   function removeConnection(connectionId) {
     const connection = project.connections.find((item) => item.id === connectionId);
     if (!connection) return;
@@ -4200,7 +4676,7 @@
       clearConnectionDraft();
     }
     selectedConnectionId = null;
-    normalizeOrders();
+    normalizeSlots();
     persistProject();
     commitHistory();
     renderAll();
@@ -4258,13 +4734,24 @@
     renderAll();
   }
 
+  function cancelModuleToggle() {
+    if (moduleToggleTimer === null) return;
+    clearTimeout(moduleToggleTimer);
+    moduleToggleTimer = null;
+  }
+
   function onModuleToggleClick(event) {
     const toggle = event.target.closest?.('[data-toggle-module]');
     if (!toggle) return;
     // Клик по рычажку не должен запускать drag & drop или обработку холста.
     event.preventDefault();
     event.stopPropagation();
-    toggleModule(toggle.getAttribute('data-toggle-module'));
+    const moduleId = toggle.getAttribute('data-toggle-module');
+    cancelModuleToggle();
+    moduleToggleTimer = setTimeout(() => {
+      moduleToggleTimer = null;
+      toggleModule(moduleId);
+    }, 250);
   }
 
   function onModuleToggleKeyDown(event) {
@@ -4277,6 +4764,14 @@
 
   function onCanvasClick(event) {
     if (performance.now() < suppressCanvasClickUntil) return;
+
+    // Второй (и последующий) клик двойного щелчка обрабатывается только
+    // обработчиком dblclick — иначе он может нажать кнопку × появившегося
+    // после первого клика выделения и удалить провод.
+    if (event.detail > 1) {
+      cancelWireSelection();
+      return;
+    }
 
     // Единая точка перевода курсора в координаты схемы для всех кликов по
     // холсту (порты, фон). getScreenCTM().inverse() учитывает текущий зум.
@@ -4300,6 +4795,15 @@
       return;
     }
 
+    const capButton = event.target.closest('[data-rail-capacity]');
+    if (capButton) {
+      changeRailCapacity(
+        capButton.getAttribute('data-rail-id'),
+        capButton.getAttribute('data-rail-capacity') === 'increase' ? 1 : -1
+      );
+      return;
+    }
+
     const sourceToggle = event.target.closest('[data-toggle-source]');
     if (sourceToggle) {
       event.preventDefault();
@@ -4316,23 +4820,169 @@
 
     const wire = event.target.closest('[data-connection-id]');
     if (wire) {
-      selectConnection(wire.getAttribute('data-connection-id'));
+      scheduleWireSelection(wire.getAttribute('data-connection-id'));
       return;
     }
 
     if (event.target.closest('[data-module-id]')) return;
 
     // Клик по пустому месту снимает выделение провода и отменяет выбор порта.
+    cancelWireSelection();
     selectedConnectionId = null;
     if (activePort || pendingWire) clearConnectionDraft();
     renderAll();
   }
 
-  function onCanvasDblClick(event) {
-    const wire = event.target.closest('[data-connection-id]');
+  /* ------------------- Inline editor (подписи) ------------------- */
+
+  function hitElementAtEvent(event) {
+    // Первый клик по проводу перерисовывает слой проводов, поэтому event.target
+    // у dblclick может указывать на уже удалённый узел. elementFromPoint даёт
+    // актуальный элемент под курсором и работает при любом масштабе холста.
+    try {
+      return document.elementFromPoint(event.clientX, event.clientY) || event.target;
+    } catch (error) {
+      return event.target;
+    }
+  }
+
+  function closeInlineEditor() {
+    if (!editing) return;
+    editing = null;
+    currentEditingId = null;
+    currentEditingType = null;
+    if (dom.inlineEditor) dom.inlineEditor.hidden = true;
+  }
+
+  function commitInlineEdit() {
+    if (!editing || !dom.inlineEditor) return;
+    const { kind, id } = editing;
+    const isModule = kind === 'module';
+    const field = isModule ? 'description' : 'label';
+    const maxLength = isModule
+      ? MAX_MODULE_DESCRIPTION_LENGTH
+      : MAX_WIRE_LABEL_LENGTH;
+    const value = safeText(dom.inlineEditor.value, '', maxLength);
+    closeInlineEditor();
+
+    const item = isModule
+      ? moduleById(id)
+      : project.connections.find((connection) => connection.id === id);
+    if (!item || (item[field] || '') === value) return;
+    item[field] = value;
+    persistProject();
+    commitHistory();
+    renderAll();
+  }
+
+  function cancelInlineEdit() {
+    closeInlineEditor();
+  }
+
+  function onInlineEditorKeyDown(event) {
+    if (!editing) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      event.stopPropagation();
+      commitInlineEdit();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelInlineEdit();
+    }
+  }
+
+  function onInlineEditorPointerDown(event) {
+    // Поле редактирования — отдельный жест: он не должен доходить до холста
+    // (панорамирование, выбор порта, перетаскивание модуля).
+    event.stopPropagation();
+  }
+
+  function openInlineEditor(kind, id, anchor) {
+    if (!dom.inlineEditor || !anchor) return;
+    const isModule = kind === 'module';
+    const item = isModule
+      ? moduleById(id)
+      : project.connections.find((connection) => connection.id === id);
+    if (!item) return;
+
+    // Фиксируем прямоугольник до сохранения предыдущего поля: commitInlineEdit()
+    // может перерисовать SVG, после чего старый DOM-узел якоря уже исчезнет.
+    const anchorRect = anchor.getBoundingClientRect();
+
+    // Если уже открыто другое поле — сохраняем его перед переключением.
+    commitInlineEdit();
+    clearConnectionDraft();
+
+    const field = isModule ? 'description' : 'label';
+    editing = { kind, id, anchorRect };
+    // Глобальная привязка поля к редактируемому элементу.
+    currentEditingId = id;
+    currentEditingType = kind;
+    const editor = dom.inlineEditor;
+    const context = isModule ? 'Описание модуля' : 'Маркировка провода';
+    editor.maxLength = isModule
+      ? MAX_MODULE_DESCRIPTION_LENGTH
+      : MAX_WIRE_LABEL_LENGTH;
+    editor.value = item[field] || '';
+    editor.title = `${context} · Enter — сохранить, Esc — отмена`;
+    editor.setAttribute('aria-label', context);
+    editor.placeholder = isModule
+      ? 'Например: Розетки в туалете · Enter — сохранить'
+      : 'Например: Свет в комнате · Enter — сохранить';
+    editor.hidden = false;
+    placeOverlay(editor, editing.anchorRect, 10);
+    editor.focus({ preventScroll: true });
+    editor.select();
+  }
+
+  // Двойной клик по невидимому хало провода. Слушатель висит на слое проводов
+  // и реагирует только на .wire-halo (или на подложку уже созданной подписи),
+  // поэтому видимая линия с pointer-events: none здесь ни при чём.
+  function onWireDblClick(event) {
+    // Сначала DOM-цель (работает и для синтетических событий без координат),
+    // затем актуальный элемент под курсором (если первый клик перерисовал слой).
+    const direct = event.target;
+    const target = direct?.closest?.('.wire-halo') || direct?.closest?.('[data-connection-id]')
+      ? direct
+      : hitElementAtEvent(event);
+    const wire = target?.closest?.('.wire-halo') ||
+                 target?.closest?.('[data-connection-id]');
     if (!wire) return;
     event.preventDefault();
-    removeConnection(wire.getAttribute('data-connection-id'));
+    event.stopPropagation();
+    cancelWireSelection();
+    const connectionId = wire.getAttribute('data-connection-id');
+    if (connectionId) openInlineEditor('wire', connectionId, wire);
+  }
+
+  // Слой модулей ловит двойной клик в том числе по рычажку — иначе центр
+  // автомата перехватывается одиночным переключением и подпись не открывается.
+  function onModuleDblClick(event) {
+    const direct = event.target;
+    const target = direct?.closest?.('[data-module-id]') ? direct : hitElementAtEvent(event);
+    const moduleElement = target?.closest?.('[data-module-id]');
+    if (!moduleElement || target.closest?.('[data-delete-module]')) return;
+    const moduleId = moduleElement.getAttribute('data-module-id');
+    if (!moduleId || moduleId === POWER_SOURCE.id) return;
+    event.preventDefault();
+    event.stopPropagation();
+    cancelModuleToggle();
+    openInlineEditor('module', moduleId, moduleElement);
+  }
+
+  function onCanvasDblClick(event) {
+    // Двойной клик не должен вызывать перетаскивание, выбор порта или другие
+    // действия холста.
+    event.preventDefault();
+    event.stopPropagation();
+    cancelWireSelection();
+
+    const target = hitElementAtEvent(event);
+    if (!target || target.closest?.('#inline-editor, .inline-editor-input')) return;
+    // Провода обрабатывает onWireDblClick, модули — onModuleDblClick;
+    // остальные служебные элементы оставляем их собственным обработчикам.
+    if (target.closest?.('[data-connection-id], [data-module-id], [data-delete-module], [data-delete-wire], [data-delete-rail], [data-rail-capacity], [data-toggle-module], [data-toggle-source], [data-port-id]')) return;
   }
 
   function onCanvasKeyDown(event) {
@@ -4364,6 +5014,16 @@
       return;
     }
 
+    const capButton = event.target.closest('[data-rail-capacity]');
+    if (capButton && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault();
+      changeRailCapacity(
+        capButton.getAttribute('data-rail-id'),
+        capButton.getAttribute('data-rail-capacity') === 'increase' ? 1 : -1
+      );
+      return;
+    }
+
     const port = event.target.closest('[data-port-id]');
     if (port && (event.key === 'Enter' || event.key === ' ')) {
       event.preventDefault();
@@ -4386,6 +5046,21 @@
   function onGlobalKeyDown(event) {
     const isEditable = event.target.matches?.('input, textarea, select, [contenteditable="true"]');
     const inDialog = Boolean(event.target.closest?.('dialog'));
+
+    // Пока открыто inline-поле, горячие клавиши холста не должны удалять
+    // элементы или сбрасывать выделение. Delete/Backspace внутри самого поля
+    // остаются обычным редактированием текста (preventDefault не нужен).
+    if (editing) {
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        if (!isEditable) event.preventDefault();
+        return;
+      }
+      if (event.key === 'Escape' && !isEditable) {
+        event.preventDefault();
+        cancelInlineEdit();
+        return;
+      }
+    }
 
     // Пробел — модификатор панорамирования; не перехватываем ввод и активацию
     // сфокусированных кнопок/портов (там пробел работает как Enter).
@@ -4536,24 +5211,26 @@
     }
 
     const rows = [
-      ['Название модуля', 'Тег', 'Количество', 'Статус'],
+      ['Название модуля', 'Тег', 'Количество', 'Статус', 'Описание'],
       ...specification.map((item) => [
         item.name,
         item.tags.join(', '),
         item.count,
-        specificationStatusLabel(item)
+        specificationStatusLabel(item),
+        item.descriptions.join('; ')
       ])
     ];
 
     if (project.connections.length > 0) {
       rows.push([]);
       rows.push(['Соединения']);
-      rows.push(['От', 'К', 'Тип']);
+      rows.push(['От', 'К', 'Тип', 'Маркировка']);
       for (const connection of project.connections) {
         rows.push([
           connectionPortLabel(connection, 'from'),
           connectionPortLabel(connection, 'to'),
-          connection.type
+          connection.type,
+          typeof connection.label === 'string' ? connection.label : ''
         ]);
       }
 
@@ -4657,6 +5334,8 @@
       '[data-delete-module]',
       '[data-delete-wire]',
       '[data-delete-rail]',
+      '[data-rail-capacity]',
+      '.rail-cap-control',
       '.wire-halo',
       '.module-focus-ring',
       '.module-pending-badge',
@@ -4821,10 +5500,26 @@
 
     dom.canvas.addEventListener('pointerdown', onCanvasPointerDown);
     dom.canvas.addEventListener('click', onCanvasClick);
+    // Подпись провода открывается двойным кликом именно по хало:
+    // видимый .wire-path имеет pointer-events: none и событие не ловит.
+    dom.wireLayer.addEventListener('dblclick', onWireDblClick);
     dom.canvas.addEventListener('dblclick', onCanvasDblClick);
     dom.canvas.addEventListener('keydown', onCanvasKeyDown);
+    if (dom.inlineEditor) {
+      const editor = dom.inlineEditor;
+      // Клик по полю — отдельный жест: он не должен доходить до холста
+      // (панорамирование, выбор порта, перетаскивание модуля).
+      editor.addEventListener('pointerdown', onInlineEditorPointerDown);
+      editor.addEventListener('dblclick', (event) => event.stopPropagation());
+      editor.addEventListener('keydown', onInlineEditorKeyDown);
+      // Клик мимо поля сохраняет текст так же, как Enter.
+      editor.addEventListener('blur', () => {
+        if (editing) commitInlineEdit();
+      });
+    }
     // Слой модулей перехватывает клики/клавиши по рычажкам до обработчика холста.
     dom.moduleLayer.addEventListener('click', onModuleToggleClick);
+    dom.moduleLayer.addEventListener('dblclick', onModuleDblClick);
     dom.moduleLayer.addEventListener('keydown', onModuleToggleKeyDown);
 
     dom.portLayer.addEventListener('pointerover', onPortPointerOver);
@@ -4897,7 +5592,7 @@
 
     // Баннер миграции показывается один раз: обновлённый проект уже записан в localStorage.
     const migrationText = dom.migrationBanner.querySelector('[data-migration-text]');
-    if (migrationText) migrationText.textContent = MIGRATION_NOTICE;
+    if (migrationText) migrationText.textContent = migrationNotice;
     dom.migrationBanner.hidden = !showMigrationBanner;
 
     for (const [message, type] of bootNotices) {

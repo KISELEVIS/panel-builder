@@ -1647,6 +1647,45 @@ h2 {
   color: var(--text);
 }
 
+/* ---------- Inline label editor (двойной клик по проводу / модулю) ---------- */
+
+/* Само поле живёт внутри .svg-wrap и лежит поверх SVG-холста: z-index выше
+   декоративного vignette-слоя (.svg-wrap::after, z-index: 1) и оверлеев.
+   По умолчанию скрыто через [hidden] { display: none !important }. */
+.inline-editor-input {
+  position: absolute;
+  z-index: 20;
+  width: min(268px, calc(100% - 12px));
+  height: 36px;
+  padding: 0 11px;
+  border: 1px solid var(--accent-line);
+  border-radius: 9px;
+  background: var(--toast-bg);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 550;
+  box-shadow: var(--shadow-raised);
+  animation: alert-in 0.13s ease both;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.inline-editor-input::placeholder {
+  color: var(--text-faint);
+  opacity: 1;
+  font-size: 10.5px;
+}
+
+.inline-editor-input:hover {
+  background: var(--field-hover);
+}
+
+.inline-editor-input:focus {
+  border-color: var(--accent);
+  outline: none;
+  background: var(--surface-2);
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-raised);
+}
+
 .wire-type-l1 { --wire-type-color: var(--wire-l1); }
 .wire-type-l2 {
   --wire-type-color: var(--wire-l2);
@@ -2102,10 +2141,30 @@ body.is-panning * {
   text-anchor: middle;
 }
 
+/* Пунктирные деления рейки показывают, к каким слотам прилипают модули. */
 .rail-slot-line {
-  stroke: var(--border);
+  stroke: var(--accent-line);
   stroke-width: 1;
-  opacity: 0.55;
+  stroke-dasharray: 3 5;
+  opacity: 0.32;
+}
+
+.rail.is-drop-target .rail-slot-line {
+  opacity: 0.6;
+}
+
+/* Подсветка целевых слотов при перетаскивании. */
+.rail-slot-highlight {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
+
+.rail-slot-highlight.is-invalid {
+  fill: var(--danger-soft);
+  stroke: var(--danger);
 }
 
 .rail-scale-base {
@@ -2180,6 +2239,82 @@ body.is-panning * {
 .rail-delete:hover .rail-delete-x,
 .rail-delete:focus-visible .rail-delete-x {
   stroke: var(--danger-text);
+}
+
+/* Единый блок управления длиной рейки [-] N [+] слева от первого модуля.
+   Блок привязан к левому краю рейки и не меняет свою позицию при изменении
+   вместимости: шкала растёт вправо, кнопки остаются слева. */
+.rail-cap-control {
+  pointer-events: none;
+}
+
+.rail-cap-control-bg {
+  fill: color-mix(in srgb, var(--surface-2) 90%, var(--bg));
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.rail-cap-control-value {
+  fill: var(--text-soft);
+  font-size: 10px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  text-anchor: middle;
+}
+
+/* Слой #layer-rail имеет pointer-events: none, поэтому кнопкам события
+   включаем явно: увеличенная зона захвата остаётся кликабельной на зуме. */
+.rail-cap-btn {
+  cursor: pointer;
+  outline: none;
+  pointer-events: all;
+}
+
+.rail-cap-hit {
+  fill: var(--transparent);
+}
+
+.rail-cap-bg {
+  fill: var(--surface-2);
+  stroke: var(--accent-line);
+  stroke-width: 1.2;
+  transition: fill 0.12s ease, stroke 0.12s ease;
+}
+
+.rail-cap-icon {
+  fill: none;
+  stroke: var(--accent-text);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  transition: stroke 0.12s ease;
+}
+
+.rail-cap-btn:hover .rail-cap-bg,
+.rail-cap-btn:focus-visible .rail-cap-bg {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+}
+
+.rail-cap-btn:hover .rail-cap-icon,
+.rail-cap-btn:focus-visible .rail-cap-icon {
+  stroke: var(--text);
+}
+
+.rail-cap-btn.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.rail-cap-btn.is-disabled:hover .rail-cap-bg,
+.rail-cap-btn.is-disabled:focus-visible .rail-cap-bg {
+  fill: var(--surface-2);
+  stroke: var(--accent-line);
+}
+
+.rail-cap-btn.is-disabled:hover .rail-cap-icon,
+.rail-cap-btn.is-disabled:focus-visible .rail-cap-icon {
+  stroke: var(--accent-text);
 }
 
 .rail-overflow-outline {
@@ -2313,6 +2448,31 @@ body.is-panning * {
 
 .wire-badge text.is-light-text {
   fill: var(--tag-light);
+}
+
+/* Маркировка провода: подложка цвета холста, чтобы текст не сливался с линией. */
+.wire-label {
+  cursor: text;
+}
+
+.wire-label-bg {
+  fill: var(--canvas-bg);
+  fill-opacity: 0.88;
+  stroke: var(--border-strong);
+  stroke-width: 0.8;
+}
+
+.wire-label-text {
+  fill: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.005em;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.wire.is-dead .wire-label-bg {
+  fill-opacity: 0.8;
 }
 
 .wire-delete {
@@ -3054,6 +3214,26 @@ body.is-panning * {
   font-size: 5.4px;
   font-weight: 700;
   letter-spacing: 0.09em;
+}
+
+/* Пользовательское описание модуля (двойной клик): крупный жирный текст
+   контрастного цвета, одна строка с обрезкой многоточием в moduleDescriptionMarkup. */
+.module-description {
+  fill: var(--module-text-on-light);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.module--body-dark .module-description,
+.module--side-busbar .module-description {
+  fill: var(--module-text-on-dark);
+}
+
+.module--busbar .module-description {
+  fill: var(--busbar-label);
 }
 
 .module-focus-ring {
