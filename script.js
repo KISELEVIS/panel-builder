@@ -133,12 +133,27 @@
     'impulse-relay'
   ]));
   const SVG_NS = 'http://www.w3.org/2000/svg';
-  const PORT_LABELS = Object.freeze({ top: 'верх', bottom: 'низ' });
-  const PORT_SIDES = Object.freeze(['top', 'bottom']);
+  const PORT_LABELS = Object.freeze({
+    top: 'верх', bottom: 'низ', left: 'лево', right: 'право'
+  });
+  // Полный список граней: обычные модули используют только top/bottom,
+  // боковые шины N/PE — только left/right. Порядок важен для стабильности
+  // обхода (рендер, фазировка, симуляция).
+  const PORT_SIDES = Object.freeze(['top', 'right', 'bottom', 'left']);
+  const VERTICAL_PORT_SIDES = Object.freeze(['top', 'bottom']);
+  const SIDE_PORT_SIDES = Object.freeze(['left', 'right']);
   const PORT_RADIUS = 4;
+  // Клеммы боковых шин идут вплотную (10 штук на высоте модуля), поэтому
+  // видимая точка меньше, а зона захвата уже — иначе круги перекрывали бы
+  // друг друга и клик попадал не в тот порт.
+  const SIDE_PORT_RADIUS = 3;
   const PORT_HIT_RADIUS = 11;
+  const SIDE_PORT_HIT_RADIUS = 6;
   const WIRE_OFFSET = 30;
   const WIRE_LANE_GAP = 8;
+  // Горизонтальный «вывод» боковой клеммы: короткий отрезок от грани
+  // модуля, после которого провод уходит вверх/вниз по ряду над модулями.
+  const WIRE_STUB = 14;
   // Вертикальные коридоры для проводов, идущих с верхней грани на нижнюю.
   const WIRE_CORRIDOR_X = Object.freeze({ left: 40, right: 976 });
   const MIGRATION_NOTICE = 'Провода сброшены из-за обновления, проведите заново';
@@ -426,6 +441,62 @@
       description: 'Серебристая шина заземления на 6 клемм: все порты становятся активными одновременно. Подключаются только провода PE.'
     },
     {
+      id: 'busbar-n-left',
+      type: 'busbar',
+      typeLabel: 'Шина N',
+      category: 'terminals',
+      name: 'Шина N (левая)',
+      width: 1,
+      color: '#3b82f6',
+      tagPrefix: 'XN',
+      ports: { left: 10, top: 0, bottom: 0, right: 0 },
+      isBusbar: true,
+      busType: 'N',
+      description: 'Узкая медная шина нуля в корпусе 1P: 10 клемм по левой грани. Ток с любого порта растекается на все остальные. Подключаются только провода N.'
+    },
+    {
+      id: 'busbar-n-right',
+      type: 'busbar',
+      typeLabel: 'Шина N',
+      category: 'terminals',
+      name: 'Шина N (правая)',
+      width: 1,
+      color: '#3b82f6',
+      tagPrefix: 'XN',
+      ports: { right: 10, top: 0, bottom: 0, left: 0 },
+      isBusbar: true,
+      busType: 'N',
+      description: 'Узкая медная шина нуля в корпусе 1P: 10 клемм по правой грани. Ток с любого порта растекается на все остальные. Подключаются только провода N.'
+    },
+    {
+      id: 'busbar-pe-left',
+      type: 'busbar',
+      typeLabel: 'Шина PE',
+      category: 'terminals',
+      name: 'Шина PE (левая)',
+      width: 1,
+      color: '#2563eb',
+      tagPrefix: 'XP',
+      ports: { left: 10, top: 0, bottom: 0, right: 0 },
+      isBusbar: true,
+      busType: 'PE',
+      description: 'Узкая серебристая шина заземления в корпусе 1P: 10 клемм по левой грани. Все порты активны одновременно. Подключаются только провода PE.'
+    },
+    {
+      id: 'busbar-pe-right',
+      type: 'busbar',
+      typeLabel: 'Шина PE',
+      category: 'terminals',
+      name: 'Шина PE (правая)',
+      width: 1,
+      color: '#2563eb',
+      tagPrefix: 'XP',
+      ports: { right: 10, top: 0, bottom: 0, left: 0 },
+      isBusbar: true,
+      busType: 'PE',
+      description: 'Узкая серебристая шина заземления в корпусе 1P: 10 клемм по правой грани. Все порты активны одновременно. Подключаются только провода PE.'
+    },
+    {
       id: 'bus-connector',
       type: 'busbar',
       typeLabel: 'Шинный',
@@ -636,8 +707,12 @@
   // Тип шины (N / PE) хранится в самом модуле; для старых сохранений он
   // восстанавливается по записи библиотеки.
   function busbarTypeOf(module) {
+    // busType — каноничное свойство новых боковых шин; busbarType остаётся
+    // для обратной совместимости со старыми сохранениями и широкими шинами.
+    if (module?.busType === 'N' || module?.busType === 'PE') return module.busType;
     if (module?.busbarType === 'N' || module?.busbarType === 'PE') return module.busbarType;
-    const libraryType = LIBRARY_BY_ID.get(module?.libraryId)?.busbarType;
+    const libraryItem = LIBRARY_BY_ID.get(module?.libraryId);
+    const libraryType = libraryItem?.busType || libraryItem?.busbarType;
     return libraryType === 'N' || libraryType === 'PE' ? libraryType : null;
   }
 
@@ -973,18 +1048,24 @@
 
   function portsForModule(module) {
     if (module?.isPowerSource || module?.id === POWER_SOURCE.id) {
-      return { top: 0, bottom: POWER_SOURCE.ports.length };
+      return { top: 0, right: 0, bottom: POWER_SOURCE.ports.length, left: 0 };
     }
     const configured = module?.ports || LIBRARY_BY_ID.get(module?.libraryId)?.ports;
     if (configured) {
-      return {
-        top: clamp(Math.round(Number(configured.top) || 1), 1, 8),
-        bottom: clamp(Math.round(Number(configured.bottom) || 1), 1, 8)
+      // Грани, которых нет в конфигурации (в том числе все новые боковые
+      // грани старых модулей), получают 0 портов. Верхний предел 10 — ровно
+      // столько клемм у боковых шин N/PE.
+      const count = (side) => {
+        const value = configured[side];
+        if (value === undefined || value === null || value === '') return 0;
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? clamp(Math.round(parsed), 0, 10) : 0;
       };
+      return { top: count('top'), right: count('right'), bottom: count('bottom'), left: count('left') };
     }
     // Legacy/unknown modules get at least one port per DIN unit.
     const fallback = clamp(Math.round(Number(module?.width) || 1), 1, 6);
-    return { top: fallback, bottom: fallback };
+    return { top: fallback, right: 0, bottom: fallback, left: 0 };
   }
 
   function makePortId(moduleId, side, index) {
@@ -992,13 +1073,34 @@
   }
 
   function isPortSide(value) {
-    return value === 'top' || value === 'bottom';
+    return PORT_SIDES.includes(value);
+  }
+
+  function isSidePort(side) {
+    return SIDE_PORT_SIDES.includes(side);
+  }
+
+  // Единая формула координат клеммы: используется и рендером портов, и
+  // расчётом точек для трассировки — чтобы клик и провод совпадали всегда.
+  function modulePortPoint(position, side, index, counts = portsForModule(position.module)) {
+    if (side === 'top' || side === 'bottom') {
+      return {
+        x: position.x + ((index + 1) * position.width) / (counts[side] + 1),
+        y: side === 'top' ? position.y : position.y + MODULE_HEIGHT
+      };
+    }
+    return {
+      x: side === 'left' ? position.x : position.x + position.width,
+      y: position.y + ((index + 1) * MODULE_HEIGHT) / (counts[side] + 1)
+    };
   }
 
   function normalizePortIndex(value, module, side) {
-    const count = portsForModule(module)[side] || 1;
+    const count = portsForModule(module)[side] || 0;
     const parsed = Number(value);
-    return Number.isFinite(parsed) ? clamp(Math.round(parsed), 0, count - 1) : 0;
+    return Number.isFinite(parsed) && count > 0
+      ? clamp(Math.round(parsed), 0, count - 1)
+      : 0;
   }
 
   function moduleById(moduleId) {
@@ -1029,6 +1131,7 @@
     if (!module || !position || !isPortSide(side) || !Number.isInteger(index)) return null;
     const counts = portsForModule(module);
     if (index < 0 || index >= counts[side]) return null;
+    const point = modulePortPoint(position, side, index, counts);
     return {
       moduleId,
       side,
@@ -1036,8 +1139,8 @@
       railId: position.railId || location?.rail.id || null,
       railIndex: Number.isInteger(position.railIndex) ? position.railIndex : (location?.index ?? 0),
       // Порты равномерно распределены по грани модуля (без углов).
-      x: position.x + ((index + 1) * position.width) / (counts[side] + 1),
-      y: side === 'top' ? position.y : position.y + MODULE_HEIGHT
+      x: point.x,
+      y: point.y
     };
   }
 
@@ -1407,9 +1510,10 @@
       width: libraryItem.width,
       order: 0,
       color: libraryItem.color,
-      ports: { top: libraryItem.ports.top, bottom: libraryItem.ports.bottom },
+      ports: portsForModule(libraryItem),
       isBusbar: libraryItem.isBusbar === true,
-      busbarType: libraryItem.busbarType || null,
+      busType: libraryItem.busType || null,
+      busbarType: libraryItem.busType || libraryItem.busbarType || null,
       tag: tag || generateTag(libraryItem.tagPrefix, project ? allModules() : []),
       isOn: true
     };
@@ -1436,7 +1540,10 @@
         width: libraryItem.width,
         order: index,
         color: libraryItem.color,
-        ports: { top: libraryItem.ports.top, bottom: libraryItem.ports.bottom },
+        ports: portsForModule(libraryItem),
+        isBusbar: libraryItem.isBusbar === true,
+        busType: libraryItem.busType || null,
+        busbarType: libraryItem.busType || libraryItem.busbarType || null,
         tag,
         isOn: true
       };
@@ -1556,7 +1663,9 @@
           color,
           ports,
           isBusbar: rawModule.isBusbar === true || libraryItem?.isBusbar === true,
-          busbarType: rawModule.busbarType || libraryItem?.busbarType || null,
+          busType: rawModule.busType || libraryItem?.busType || null,
+          busbarType: rawModule.busType || rawModule.busbarType ||
+            libraryItem?.busType || libraryItem?.busbarType || null,
           tag,
           isOn: rawModule.isOn !== false
         };
@@ -2106,6 +2215,31 @@
     return clamp(base + shift, 8, SVG_WIDTH - 8);
   }
 
+  // Ряды коротких выводов боковых клемм считаются отдельно от коридоров
+  // обычных проводов: иначе соседние клеммы одной шины «съедали» бы все
+  // коридорные ряды и отводы получались бы слишком длинными.
+  function reserveStub(side, ySpan, laneUsage) {
+    const lanes = laneUsage.stubs[side] || (laneUsage.stubs[side] = []);
+    let lane = 0;
+    while (lanes[lane]?.some((used) => spansOverlap(used, ySpan))) lane += 1;
+    if (!lanes[lane]) lanes[lane] = [];
+    lanes[lane].push(ySpan);
+    return lane;
+  }
+
+  // Боковая клемма шины выходит горизонтально из модуля на небольшое
+  // расстояние, после чего провод продолжается ортогональным маршрутом
+  // по ряду над/под модулями — без длинной линии поперёк корпусов.
+  function sidePortAnchor(port, laneUsage, reserve, ySpan) {
+    const span = ySpan || [port.y - 1, port.y + 1];
+    const lane = reserve ? reserveStub(port.side, span, laneUsage) : 0;
+    const offset = WIRE_STUB + lane * CORRIDOR_LANE_GAP;
+    return {
+      x: port.x + (port.side === 'left' ? -offset : offset),
+      y: port.y
+    };
+  }
+
   // Ряды для проводов, идущих от источника питания вниз к модулям.
   function reserveSourceLane(span, laneUsage) {
     const lanes = laneUsage.source || (laneUsage.source = []);
@@ -2163,6 +2297,24 @@
       return { connection, points, badge: pickWireBadge(points) };
     }
 
+    // Боковая клемма шины: вниз от источника, по ряду над модулями к
+    // короткому отводу клеммы, затем горизонтально прямо в неё.
+    // Все сегменты ортогональны.
+    if (isSidePort(target.side)) {
+      const anchor = sidePortAnchor(
+        target, laneUsage, reserve,
+        [Math.min(ySource, target.y), Math.max(ySource, target.y)]
+      );
+      const points = [
+        [source.x, source.y],
+        [source.x, ySource],
+        [anchor.x, ySource],
+        [anchor.x, target.y],
+        [target.x, target.y]
+      ];
+      return { connection, points, badge: pickWireBadge(points) };
+    }
+
     const targetLane = reserve ? reserveLane(target.side, target.railIndex, span, laneUsage) : 0;
     const yTarget = laneY(target.side, targetLane, target.railIndex);
     const railCenter = (RAIL.moduleX + RAIL.moduleRight) / 2;
@@ -2183,6 +2335,53 @@
     return { connection, points, badge: pickWireBadge(points) };
   }
 
+  // Маршрут с участием боковых клемм шин. Порт сначала выходит коротким
+  // отводом из корпуса, затем провод идёт по ряду над модулями — все
+  // изломы остаются строго ортогональными.
+  function buildSideWireLayout(connection, start, end, laneUsage, reserve, span) {
+    const startIsSide = isSidePort(start.side);
+    const endIsSide = isSidePort(end.side);
+    const transferY = Math.min(
+      laneY('top', 0, start.railIndex),
+      laneY('top', 0, end.railIndex)
+    );
+    const ySpan = [
+      Math.min(start.y, end.y, transferY),
+      Math.max(start.y, end.y, transferY)
+    ];
+
+    if (startIsSide && endIsSide) {
+      const a = sidePortAnchor(start, laneUsage, reserve, ySpan);
+      const b = sidePortAnchor(end, laneUsage, reserve, ySpan);
+      const points = [
+        [start.x, start.y], [a.x, start.y],
+        [a.x, transferY], [b.x, transferY],
+        [b.x, end.y], [end.x, end.y]
+      ];
+      return { connection, points, badge: pickWireBadge(points) };
+    }
+
+    if (startIsSide) {
+      const a = sidePortAnchor(start, laneUsage, reserve, ySpan);
+      const endLane = reserve ? reserveLane(end.side, end.railIndex, span, laneUsage) : 0;
+      const y2 = laneY(end.side, endLane, end.railIndex);
+      const points = [
+        [start.x, start.y], [a.x, start.y],
+        [a.x, y2], [end.x, y2], [end.x, end.y]
+      ];
+      return { connection, points, badge: pickWireBadge(points) };
+    }
+
+    const b = sidePortAnchor(end, laneUsage, reserve, ySpan);
+    const startLane = reserve ? reserveLane(start.side, start.railIndex, span, laneUsage) : 0;
+    const y1 = laneY(start.side, startLane, start.railIndex);
+    const points = [
+      [start.x, start.y], [start.x, y1],
+      [b.x, y1], [b.x, end.y], [end.x, end.y]
+    ];
+    return { connection, points, badge: pickWireBadge(points) };
+  }
+
   function buildWireLayout(connection, positions, laneUsage, reserve = true) {
     const start = getPortPoint(connection.fromModuleId, connection.fromPortSide, connection.fromPortIndex, positions);
     const end = getPortPoint(connection.toModuleId, connection.toPortSide, connection.toPortIndex, positions);
@@ -2194,6 +2393,9 @@
 
     const sameRail = Boolean(start.railId) && start.railId === end.railId;
     const span = [Math.min(start.x, end.x), Math.max(start.x, end.x)];
+    if (isSidePort(start.side) || isSidePort(end.side)) {
+      return buildSideWireLayout(connection, start, end, laneUsage, reserve, span);
+    }
     const startLane = reserve ? reserveLane(start.side, start.railIndex, span, laneUsage) : 0;
     const endLane = start.side === end.side
       ? startLane
@@ -2230,7 +2432,12 @@
   }
 
   function buildWireLayouts(positions) {
-    const laneUsage = { rails: {}, corridors: { left: [], right: [] }, source: [] };
+    const laneUsage = {
+      rails: {},
+      corridors: { left: [], right: [] },
+      stubs: { left: [], right: [] },
+      source: []
+    };
     const layouts = [];
     for (const connection of project.connections) {
       const layout = buildWireLayout(connection, positions, laneUsage);
@@ -2306,7 +2513,12 @@
       toPortSide: pendingWire.side,
       toPortIndex: pendingWire.index
     };
-    const laneUsage = { rails: {}, corridors: { left: [], right: [] }, source: [] };
+    const laneUsage = {
+      rails: {},
+      corridors: { left: [], right: [] },
+      stubs: { left: [], right: [] },
+      source: []
+    };
     const layout = buildWireLayout(draft, positions, laneUsage, false);
     if (!layout) return '';
     return `<polyline class="wire-preview" points="${polylinePoints(layout.points)}"/>`;
@@ -2397,7 +2609,8 @@
         : '';
       const markup = `
         <g class="${classes}" id="${portId}" data-port-id="${portId}" data-module-id="${POWER_SOURCE.id}"
-           data-side="bottom" data-index="${index}" tabindex="0" role="button"
+           data-side="bottom" data-index="${index}" data-hit-radius="${PORT_HIT_RADIUS}"
+            tabindex="0" role="button"
            ${phaseAttrs}
            aria-label="${escapeHtml(`Источник питания · ${label}.${phaseHint} ${hint}`)}">
           <circle class="port-hit" cx="${point.x.toFixed(1)}" cy="${point.y}" r="${PORT_HIT_RADIUS}"/>
@@ -2424,9 +2637,12 @@
       const busLive = Boolean(busType) && isSimulationOn() && moduleHasLivePort(module, livePorts);
 
       for (const side of PORT_SIDES) {
-        const y = side === 'top' ? position.y : position.y + MODULE_HEIGHT;
         for (let index = 0; index < counts[side]; index += 1) {
-          const x = position.x + ((index + 1) * position.width) / (counts[side] + 1);
+          const point = modulePortPoint(position, side, index, counts);
+          const x = point.x;
+          const y = point.y;
+          const dotRadius = isSidePort(side) ? SIDE_PORT_RADIUS : PORT_RADIUS;
+          const hitRadius = isSidePort(side) ? SIDE_PORT_HIT_RADIUS : PORT_HIT_RADIUS;
           const portId = makePortId(module.id, side, index);
           const portRef = { moduleId: module.id, side, index };
           const isActive = samePort(activePort, portRef);
@@ -2435,6 +2651,7 @@
           const phaseName = phase ? WIRE_TYPES[phase].name : '';
           const classes = [
             'port',
+            isSidePort(side) ? 'port--side' : '',
             isActive ? 'is-active' : '',
             isPending ? 'is-pending' : '',
             occupancy.has(portId) ? 'is-connected' : '',
@@ -2449,12 +2666,13 @@
             : '';
           const markup = `
             <g class="${classes}" id="${portId}" data-port-id="${portId}" data-module-id="${escapeHtml(module.id)}"
-               data-side="${side}" data-index="${index}" tabindex="0" role="button"
+               data-side="${side}" data-index="${index}" data-hit-radius="${hitRadius}"
+               tabindex="0" role="button"
                ${phaseAttrs}
                aria-label="${escapeHtml(`${formatPortLabel(module, side, index)}.${phaseHint} ${hint}`)}">
-              <circle class="port-hit" cx="${x.toFixed(1)}" cy="${y}" r="${PORT_HIT_RADIUS}"/>
-              <circle class="port-halo" cx="${x.toFixed(1)}" cy="${y}" r="8"/>
-              <circle class="port-dot" cx="${x.toFixed(1)}" cy="${y}" r="${PORT_RADIUS}"/>
+              <circle class="port-hit" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${hitRadius}"/>
+              <circle class="port-halo" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${dotRadius + 4}"/>
+              <circle class="port-dot" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${dotRadius}"/>
             </g>`;
           // Активный порт рисуется последним — поверх остальных портов.
           if (isActive) activeMarkup = markup;
@@ -2547,7 +2765,7 @@
     const screwCount = clamp(module.width, 1, 8);
     const modulesWord = plural(module.width, ['модуль', 'модуля', 'модулей']);
 
-    const screwMarkup = PORT_SIDES.map((side) => {
+    const screwMarkup = VERTICAL_PORT_SIDES.map((side) => {
       const cy = side === 'top' ? 17 : MODULE_HEIGHT - 17;
       return Array.from({ length: screwCount }, (_, index) => {
         const cx = ((index + 1) * width) / (screwCount + 1);
@@ -2606,6 +2824,71 @@
       </g>`;
   }
 
+  // Узкая шина в корпусе 1P: синий корпус, металлическая полоса (медь для N,
+  // серебро для PE) вдоль левой или правой грани и 10 мелких клемм на ней.
+  // Подпись стоит по центру корпуса и не перекрывает клеммы.
+  function buildSideBusbarModuleMarkup(module, x, y, options = {}) {
+    const { isGhost = false, isInvalidGhost = false, isPending = false } = options;
+    const width = module.width * MODULE_UNIT;
+    const color = safeColor(module.color) || '#3b82f6';
+    const busType = busbarTypeOf(module) || 'N';
+    const typeClass = busType.toLowerCase();
+    const counts = portsForModule(module);
+    const side = counts.left > 0 ? 'left' : 'right';
+    const isLive = !isGhost && isSimulationOn() && moduleHasLivePort(module, livePorts);
+    const plateX = side === 'left' ? -5 : width - 5;
+    const labelY = MODULE_HEIGHT / 2 + (busType === 'PE' ? 6 : 7);
+    const deleteX = side === 'left' ? width - 10 : 10;
+    const widthX = side === 'left' ? width - 8 : 8;
+    const sideWord = side === 'left' ? 'слева' : 'справа';
+    const terminalCount = counts[side];
+
+    const deleteButton = isGhost ? '' : `
+      <g class="module-delete" data-delete-module="${escapeHtml(module.id)}"
+         transform="translate(${deleteX} ${MODULE_HEIGHT - 12})" tabindex="0" role="button"
+         aria-label="${escapeHtml(`Удалить модуль ${module.tag}`)}">
+        <circle class="module-delete-hit" r="12"/>
+        <circle class="module-delete-bg" r="8"/>
+        <path class="module-delete-x" d="M -2.7 -2.7 L 2.7 2.7 M 2.7 -2.7 L -2.7 2.7"/>
+      </g>`;
+
+    const pendingBadge = isPending
+      ? `<g class="module-pending-badge" transform="translate(3 -12)">
+           <circle cx="8" cy="8" r="8"/>
+           <text x="8" y="11.1">A</text>
+         </g>`
+      : '';
+
+    const interactiveAttributes = isGhost
+      ? 'aria-hidden="true"'
+      : `tabindex="0" role="group"
+         aria-label="${escapeHtml(`${module.tag}: ${module.name}, ширина 1 модуль. Шина ${busType} с ${terminalCount} клеммами ${sideWord}. Перетаскивание меняет порядок; порты создают провода только типа ${busType}.`)}"`;
+
+    return `
+      <g class="module module--side-busbar module--side-busbar-${typeClass}${isGhost ? ' module--ghost' : ''}${isInvalidGhost ? ' module--ghost-invalid' : ''}${isPending ? ' is-pending' : ''}${isLive ? ' is-bus-live' : ''}"
+         data-module-id="${escapeHtml(module.id)}" transform="translate(${x} ${y})"
+         style="--module-accent:${color}" ${interactiveAttributes}>
+        <title>${escapeHtml(`${module.tag} · ${module.name}`)}</title>
+        <rect class="module-shadow-plate" x="1" y="3" width="${width}" height="${MODULE_HEIGHT}" rx="9"/>
+        <rect class="side-busbar-body" x="0" y="0" width="${width}" height="${MODULE_HEIGHT}" rx="9"
+              stroke="${color}"/>
+        <path class="side-busbar-band" d="M 0 9 Q 0 0 9 0 H ${width - 9} Q ${width} 0 ${width} 9 V 27 H 0 Z"
+              fill="${color}"/>
+        <text class="side-busbar-tag ${tagTextClass(color)}" x="${width / 2}" y="19">${escapeHtml(module.tag)}</text>
+        <line class="side-busbar-divider" x1="6" y1="29" x2="${width - 6}" y2="29"/>
+        <rect class="side-busbar-plate side-busbar-plate--${typeClass}" x="${plateX}" y="6"
+              width="10" height="${MODULE_HEIGHT - 12}" rx="4"/>
+        <line class="side-busbar-plate-edge" x1="${plateX + 2}" y1="10" x2="${plateX + 2}"
+              y2="${MODULE_HEIGHT - 10}"/>
+        <text class="side-busbar-label side-busbar-label--${typeClass}" x="${width / 2}" y="${labelY}">${busType}</text>
+        <text class="module-width" x="${widthX}" y="${MODULE_HEIGHT - 8}">1P</text>
+        ${deleteButton}
+        <rect class="module-focus-ring" x="-4" y="-4" width="${width + 8}" height="${MODULE_HEIGHT + 8}"
+              rx="13" fill="none" stroke="${color}"/>
+        ${pendingBadge}
+      </g>`;
+  }
+
   function buildModuleMarkup(module, x, index, isInvalidGhost = false, y = RAIL.moduleY) {
     const width = module.width * MODULE_UNIT;
     const isGhost = Boolean(module.__ghost);
@@ -2614,6 +2897,10 @@
       activePort?.moduleId === module.id || pendingWire?.moduleId === module.id
     );
     if (isBusbarModule(module)) {
+      const counts = portsForModule(module);
+      if (counts.left > 0 || counts.right > 0) {
+        return buildSideBusbarModuleMarkup(module, x, y, { isGhost, isInvalidGhost, isPending });
+      }
       return buildBusbarModuleMarkup(module, x, y, { isGhost, isInvalidGhost, isPending });
     }
     const widthLabel = `${module.width}P`;
@@ -2773,9 +3060,11 @@
         width: libraryItem.width,
         order: -1,
         color: libraryItem.color,
+        ports: portsForModule(libraryItem),
         isOn: true,
         isBusbar: libraryItem.isBusbar === true,
-        busbarType: libraryItem.busbarType || null,
+        busType: libraryItem.busType || null,
+        busbarType: libraryItem.busType || libraryItem.busbarType || null,
         tag: dragState.ghostTag || generateTag(libraryItem.tagPrefix, allModules())
       };
     }
@@ -3381,8 +3670,9 @@
       const x = Number(dot.getAttribute('cx'));
       const y = Number(dot.getAttribute('cy'));
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      const hitRadius = Number(portElement.dataset.hitRadius) || PORT_HIT_RADIUS;
       const distance = Math.hypot(point.x - x, point.y - y);
-      if (distance <= PORT_HIT_RADIUS && distance < bestDistance) {
+      if (distance <= hitRadius && distance < bestDistance) {
         bestDistance = distance;
         best = portElement;
       }

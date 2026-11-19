@@ -2828,6 +2828,99 @@ body.is-panning * {
   stroke-dasharray: 5 4;
 }
 
+/* ---------- Узкие боковые шины N / PE (1P) ----------
+   Синий корпус модуля, металлическая полоса по левой/правой грани и
+   подпись по центру — клеммы (r=3) располагаются поверх полосы. */
+.side-busbar-body {
+  fill: var(--module-accent);
+  stroke-width: 1.2;
+  transition: stroke-width 0.12s ease, filter 0.2s ease;
+}
+
+.module--side-busbar:hover .side-busbar-body,
+.module--side-busbar:focus-visible .side-busbar-body {
+  stroke-width: 2.2;
+}
+
+.module--side-busbar.is-bus-live .side-busbar-body {
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--module-accent) 55%, var(--transparent)));
+}
+
+.side-busbar-band {
+  opacity: 0.92;
+  pointer-events: none;
+}
+
+.side-busbar-tag {
+  fill: #f8fafc;
+  font-size: 9px;
+  font-weight: 800;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.side-busbar-divider {
+  stroke: rgba(255, 255, 255, 0.3);
+  stroke-width: 0.8;
+  pointer-events: none;
+}
+
+.side-busbar-plate {
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.side-busbar-plate--n {
+  fill: url(#busbar-copper-gradient);
+  stroke: var(--busbar-copper-edge);
+}
+
+.side-busbar-plate--pe {
+  fill: url(#busbar-silver-gradient);
+  stroke: var(--busbar-silver-edge);
+}
+
+.side-busbar-plate-edge {
+  stroke: rgba(255, 255, 255, 0.35);
+  stroke-width: 0.8;
+  pointer-events: none;
+}
+
+.side-busbar-label {
+  fill: #f8fafc;
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-anchor: middle;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35));
+}
+
+.side-busbar-label--pe {
+  font-size: 16px;
+  letter-spacing: 0.01em;
+}
+
+.module--side-busbar .module-width {
+  fill: #f8fafc;
+}
+
+.module--side-busbar.module--ghost .side-busbar-body {
+  stroke-dasharray: 5 4;
+}
+
+.module--side-busbar.module--ghost-invalid .side-busbar-body {
+  fill: var(--danger-soft);
+  stroke: var(--danger);
+  stroke-width: 2.2;
+  stroke-dasharray: 5 4;
+}
+
+/* Клеммы боковых шин чуть меньше обычных и не перекрывают друг друга. */
+.port--side .port-halo {
+  stroke-width: 1.4;
+}
+
 .module-gloss {
   fill: url(#module-gloss-gradient);
   opacity: 0.44;
