@@ -622,6 +622,21 @@ h2 {
   color: var(--success-text);
 }
 
+/* Переключатель параметров сети — синий, чтобы отличаться от «Ток». */
+.params-toggle .sim-toggle-input:checked + .sim-toggle-track {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.params-toggle .sim-toggle-input:checked + .sim-toggle-track .sim-toggle-thumb {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+
+.params-toggle .sim-toggle-input:checked ~ .sim-toggle-copy .sim-toggle-state {
+  color: var(--accent-text);
+}
+
 /* ---------- Buttons ---------- */
 
 .btn {
@@ -675,6 +690,20 @@ h2 {
 }
 
 #export-png:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+/* Сохранение и загрузка проекта — ключевые действия работы с файлом. */
+#download-project,
+#import-project {
+  border-color: var(--accent-line);
+  color: var(--accent-text);
+}
+
+#download-project:hover:not(:disabled),
+#import-project:hover:not(:disabled) {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--text);
@@ -836,9 +865,13 @@ h2 {
 .library-list {
   display: flex;
   flex: 1 1 auto;
+  /* min-height: 0 обязателен: без него flex-элемент не сжимается и список
+     с большим числом категорий раздвигает панель вместо прокрутки. */
+  min-height: 0;
   flex-direction: column;
   gap: 5px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 8px 10px 10px;
   scrollbar-color: var(--scroll-thumb) var(--transparent);
   scrollbar-width: thin;
@@ -2475,6 +2508,34 @@ body.is-panning * {
   fill-opacity: 0.8;
 }
 
+/* Плашка силы тока поверх провода: зелёная — норма, красная — перегруз. */
+.wire-current-badge {
+  pointer-events: none;
+}
+
+.wire-current-bg {
+  fill: var(--success-soft);
+  stroke: var(--success-line);
+  stroke-width: 1;
+}
+
+.wire-current-text {
+  fill: var(--success-text);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  text-anchor: middle;
+}
+
+.wire-current-badge.is-overloaded .wire-current-bg {
+  fill: var(--danger-soft);
+  stroke: var(--danger-line);
+}
+
+.wire-current-badge.is-overloaded .wire-current-text {
+  fill: var(--danger-text);
+}
+
 .wire-delete {
   cursor: pointer;
   outline: none;
@@ -2847,6 +2908,64 @@ body.is-panning * {
   border-radius: 50%;
   background: var(--port-phase-color);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--port-phase-color) 25%, var(--transparent));
+}
+
+/* ---------- Подсказка с параметрами модуля/провода ---------- */
+
+.element-tooltip {
+  position: absolute;
+  z-index: 18;
+  display: grid;
+  gap: 3px;
+  min-width: 178px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--toast-bg);
+  box-shadow: var(--shadow-soft);
+  color: var(--text);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.element-tooltip[hidden] {
+  display: none;
+}
+
+.element-tooltip > strong {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.element-tooltip > small {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.element-tooltip-grid {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 2px 12px;
+  margin-top: 4px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border);
+}
+
+.element-tooltip-grid > span {
+  color: var(--text-muted);
+}
+
+.element-tooltip-grid > b {
+  justify-self: end;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.element-tooltip-warning {
+  margin-top: 3px;
+  color: var(--danger-text);
+  font-weight: 800;
 }
 
 /* ---------- Modules ---------- */
@@ -3236,6 +3355,83 @@ body.is-panning * {
   fill: var(--busbar-label);
 }
 
+/* ---------- Нагрузка: лампочка и мощность на корпусе ---------- */
+
+.module--load .load-icon,
+.module--load .module-name,
+.module-power {
+  pointer-events: none;
+}
+
+.load-bulb-glass {
+  fill: rgba(251, 191, 36, 0.16);
+  stroke: var(--warning);
+  stroke-width: 1.8;
+}
+
+.load-bulb-filament {
+  fill: none;
+  stroke: var(--warning-text);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.load-bulb-base {
+  fill: #64748b;
+  stroke: #334155;
+  stroke-width: 0.8;
+}
+
+.load-bulb-rays {
+  fill: none;
+  stroke: var(--warning);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  opacity: 0.8;
+}
+
+.module--load .module-name {
+  fill: var(--module-text-on-light);
+  font-size: 11px;
+  font-weight: 800;
+  text-anchor: middle;
+}
+
+.module-power {
+  fill: var(--warning-text);
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  text-anchor: middle;
+}
+
+.module-power.is-overloaded {
+  fill: var(--danger-text);
+}
+
+/* ---------- Перегрузка защитного аппарата ---------- */
+
+.module-warning {
+  fill: var(--on-solid);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.module.is-overloaded .module-card {
+  stroke: var(--danger) !important;
+  stroke-width: 2.4;
+  filter: drop-shadow(0 0 6px var(--danger));
+}
+
+.module.is-overloaded .module-band {
+  fill: var(--danger-strong) !important;
+}
+
+.module.is-overloaded .module-focus-ring {
+  stroke: var(--danger) !important;
+}
+
 .module-focus-ring {
   opacity: 0;
   pointer-events: none;
@@ -3256,6 +3452,41 @@ body.is-panning * {
 
 @keyframes pending-dash {
   to { stroke-dashoffset: -120; }
+}
+
+/* ---------- Рамка выделения и выделенные элементы ----------
+   Прямоугольник рисуется в координатах viewBox, поэтому при зуме/панораме
+   остаётся ровно под курсором. pointer-events: none — рамка никогда не
+   перехватывает клик по модулям, портам и фоновому_layer. */
+.selection-box {
+  fill: rgba(59, 130, 246, 0.2);
+  stroke: #3b82f6;
+  stroke-width: 1.4;
+  stroke-dasharray: 4;
+  pointer-events: none;
+}
+
+/* Выделенный модуль: яркая оранжевая обводка корпуса и кольца-подсветки.
+   Правила покрывают все три варианта корпуса (обычный, шина, боковая шина). */
+.module.selected .module-card,
+.module.selected .busbar-body,
+.module.selected .side-busbar-body {
+  stroke: #f59e0b;
+  stroke-width: 2;
+  filter: drop-shadow(0 0 5px rgba(245, 158, 11, 0.7));
+}
+
+.module.selected .module-focus-ring {
+  opacity: 1;
+  stroke: #f59e0b;
+  stroke-width: 2;
+  stroke-dasharray: none;
+  filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.7));
+}
+
+/* Выделенный провод получает то же тёплое свечение, сохраняя свой цвет. */
+.wire.selected .wire-path {
+  filter: drop-shadow(0 0 4px rgba(245, 158, 11, 0.9));
 }
 
 .module-band {
@@ -3523,7 +3754,7 @@ body.is-panning * {
 }
 
 .spec-table th {
-  padding: 9px 21px;
+  padding: 9px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
   color: var(--text-muted);
@@ -3536,7 +3767,7 @@ body.is-panning * {
 }
 
 .spec-table td {
-  padding: 10px 21px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
@@ -3550,12 +3781,35 @@ body.is-panning * {
 }
 
 .spec-table .tag-col {
-  width: 150px;
+  width: 120px;
 }
 
 .spec-table .count-col {
-  width: 118px;
+  width: 96px;
   text-align: right;
+  white-space: nowrap;
+}
+
+/* Бренд и артикул приходят из library.js. Узкие колонки с обрезкой
+   длинных значений: таблица остаётся компактной, полное значение —
+   в подсказке title и в CSV-экспорте. */
+.spec-table .brand-col {
+  width: 96px;
+  overflow: hidden;
+  color: var(--text-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spec-table .sku-col {
+  width: 116px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -3631,14 +3885,14 @@ body.is-panning * {
 }
 
 .spec-empty {
-  padding: 22px 21px !important;
+  padding: 22px 14px !important;
   color: var(--text-muted);
   font-size: 12px;
   text-align: center;
 }
 
 .spec-table tfoot td {
-  padding: 11px 21px;
+  padding: 11px 14px;
   border-top: 1px solid var(--border);
   background: var(--surface-2);
   color: var(--text-soft);

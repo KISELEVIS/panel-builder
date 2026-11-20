@@ -8,6 +8,9 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232563eb'/%3E%3Cpath d='M20 17v30M44 17v30M20 32h24' stroke='white' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
   <title>Щит.Студия — конфигуратор электрического щита</title>
   <link rel="stylesheet" href="./style.css">
+  <!-- База элементов подключается ПЕРЕД основной логикой: script.js читает
+       window.ELECTRIC_LIBRARY из library.js при отрисовке библиотеки. -->
+  <script src="./library.js" defer></script>
   <script src="./script.js" defer></script>
 </head>
 <body>
@@ -44,6 +47,21 @@
         </div>
 
         <div class="topbar-actions">
+          <label class="sim-toggle params-toggle" for="params-toggle"
+                 title="Показывать на схеме напряжение, ток и мощность">
+            <input class="sim-toggle-input" id="params-toggle" type="checkbox" checked
+                   aria-label="Показывать параметры сети">
+            <span class="sim-toggle-track" aria-hidden="true">
+              <span class="sim-toggle-thumb"></span>
+            </span>
+            <span class="sim-toggle-copy" aria-hidden="true">
+              <span class="sim-toggle-title">
+                <span class="sim-toggle-title-full">Показывать параметры</span>
+                <span class="sim-toggle-title-short">В/А/Вт</span>
+              </span>
+              <span class="sim-toggle-state" id="params-state">Вкл</span>
+            </span>
+          </label>
           <label class="sim-toggle" for="simulation-toggle"
                  title="Показывать, какие провода находятся под напряжением">
             <input class="sim-toggle-input" id="simulation-toggle" type="checkbox" checked
@@ -82,7 +100,7 @@
             </svg>
             <span>Экспорт CSV</span>
           </button>
-          <button class="btn btn-secondary" id="export-png" type="button" title="Скачать текущий холст в PNG">
+          <button class="btn btn-secondary" id="export-png" type="button" title="Скачать всю схему холста в PNG">
             <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
               <rect x="2.75" y="2.75" width="14.5" height="14.5" rx="2.5"
                     stroke="currentColor" stroke-width="1.5"/>
@@ -90,8 +108,24 @@
               <path d="m3.4 14.6 3.5-3.5a1.4 1.4 0 0 1 2 0l1.9 1.9m0 0 1.4-1.4a1.4 1.4 0 0 1 2 0l2.5 2.5"
                     stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
-            <span>Скачать изображение</span>
+            <span>Скачать картинку</span>
           </button>
+          <button class="btn btn-secondary" id="download-project" type="button" title="Скачать проект в JSON-файл">
+            <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="M10 2.75v9.5m0 0 3.4-3.4M10 12.25l-3.4-3.4M3.5 14.75v1.75a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-1.75"
+                    stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>Скачать проект</span>
+          </button>
+          <button class="btn btn-secondary" id="import-project" type="button" title="Загрузить проект из JSON-файла">
+            <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="M2.75 6.25A1.5 1.5 0 0 1 4.25 4.75h3.1a1.5 1.5 0 0 1 1.2.6l.85 1.15a1.5 1.5 0 0 0 1.2.6h3.15a1.5 1.5 0 0 1 1.5 1.5v6.4a1.5 1.5 0 0 1-1.5 1.5h-10a1.5 1.5 0 0 1-1.5-1.5v-8.85Z"
+                    stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              <path d="M10 8.75v5m0 0-2-2m2 2 2-2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>Загрузить проект</span>
+          </button>
+          <input type="file" id="import-file" accept=".json" style="display: none;">
           <button class="btn btn-danger-ghost" id="clear-project" type="button" title="Очистить модули и связи">
             <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
               <path d="M4.5 6h11M8 6V4.5h4V6m-6 0 .7 10h6.6L14 6M8.6 9v4.4M11.4 9v4.4"
@@ -132,7 +166,7 @@
           <span>Попробуйте «УЗО», «клеммы» или «QF».</span>
         </div>
         <div class="library-footer">
-          <span id="library-count">22 компонента</span>
+          <span id="library-count">16 компонентов</span>
           <span class="offline-badge"><span aria-hidden="true"></span>локально</span>
         </div>
       </aside>
@@ -160,7 +194,7 @@
           <div class="canvas-toolbar">
             <div class="canvas-toolbar-left">
               <span class="live-chip"><span class="live-dot" aria-hidden="true"></span>Схема</span>
-              <span class="drag-tip">Перетаскивание — слоты (с зазорами) · красный призрак — место занято · клик по порту — провод · двойной клик — подпись · колесико — зум, Пробел / средняя кнопка + тяга — панорама</span>
+              <span class="drag-tip">Перетаскивание — слоты (с зазорами) · тяга по фону — рамка выделения · Shift+клик — добавить/убрать из выделения · Delete — удалить выделенное · клик по порту — провод · двойной клик — подпись (по нагрузке — мощность) · колесико — зум, Пробел / средняя кнопка + тяга — панорама</span>
             </div>
             <div class="view-controls" role="group" aria-label="Масштаб и вид холста">
               <button class="view-btn" id="zoom-out" type="button"
@@ -245,10 +279,17 @@
               <g id="layer-modules"></g>
               <g id="layer-ports"></g>
               <g id="layer-preview"></g>
+
+              <!-- Рамка группового выделения. Лежит поверх всех слоёв и не
+                   перехватывает указатель: координаты задаются в системе
+                   viewBox, поэтому совпадают с курсором при любом зуме. -->
+              <rect id="selection-box" class="selection-box"
+                    x="0" y="0" width="0" height="0" style="display:none"/>
             </svg>
 
             <div class="port-tooltip" id="port-tooltip" hidden role="tooltip">Выберите второй порт</div>
             <div class="port-phase-tooltip" id="port-phase-tooltip" hidden role="tooltip"></div>
+            <div class="element-tooltip" id="element-tooltip" hidden role="tooltip"></div>
 
             <div class="wire-type-popover" id="wire-type-popover" hidden role="dialog"
                  aria-labelledby="wire-type-title" aria-describedby="wire-type-desc">
@@ -319,7 +360,7 @@
               <span><i class="wire-type-swatch wire-type-pe" aria-hidden="true"></i>PE — земля</span>
               <span class="legend-muted">Клик по проводу — выделить, × — удалить, двойной клик — маркировка (по модулю — описание)</span>
             </div>
-            <span class="canvas-note">SVG-холст · viewBox · координаты через getSVGCoords() → getScreenCTM().inverse() с учётом масштаба</span>
+            <span class="canvas-note">SVG-холст · viewBox · координаты через getSVGCoords() → getScreenCTM().inverse() с учётом масштаба · рамка выделения + Delete — групповое удаление</span>
           </div>
         </section>
 
@@ -346,6 +387,8 @@
                 <thead>
                   <tr>
                     <th scope="col">Название модуля</th>
+                    <th scope="col" class="brand-col">Бренд</th>
+                    <th scope="col" class="sku-col">Артикул</th>
                     <th scope="col" class="tag-col">Тег</th>
                     <th scope="col" class="count-col">Количество</th>
                   </tr>
@@ -353,11 +396,11 @@
                 <tbody id="spec-body"></tbody>
                 <tfoot id="spec-foot" hidden>
                   <tr>
-                    <td colspan="2">Итого</td>
+                    <td colspan="4">Итого</td>
                     <td class="count-col"><span id="spec-total">0</span> шт.</td>
                   </tr>
                   <tr class="spec-rails-row">
-                    <td colspan="3">
+                    <td colspan="5">
                       <span class="spec-wires-summary">
                         <span>Рейки: <strong id="spec-rails-total">1</strong></span>
                         <span class="spec-wires-caption">Модулей всего: <strong id="spec-modules-total">0</strong></span>
@@ -365,7 +408,7 @@
                     </td>
                   </tr>
                   <tr class="spec-wires-row">
-                    <td colspan="3">
+                    <td colspan="5">
                       <span class="spec-wires-summary">
                         <span>Соединений: <strong id="spec-connections-total">0</strong></span>
                         <span class="spec-wires-caption">Провода:</span>

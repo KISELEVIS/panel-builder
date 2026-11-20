@@ -20,7 +20,14 @@
   const STORAGE_KEY = 'panel-builder.project.v1';
   // v5: модули привязаны к слотам (slot) вместо порядкового номера (order).
   // Старые проекты с order конвертируются в slot при загрузке.
-  const SCHEMA_VERSION = 5;
+  // v6: добавлены мощность нагрузки (power) и отображение параметров сети
+  // (showParams: напряжение / ток / мощность).
+  const SCHEMA_VERSION = 6;
+  // Номинальное фазное напряжение и пределы мощности нагрузки.
+  const NOMINAL_VOLTAGE = 230;
+  const DEFAULT_LOAD_POWER = 1000;
+  const MIN_LOAD_POWER = 1;
+  const MAX_LOAD_POWER = 100000;
   // История живёт только в памяти: в localStorage пишется лишь текущий проект.
   const HISTORY_LIMIT = 50;
   // Пределы длины пользовательских подписей (описание модуля / маркировка провода).
@@ -41,6 +48,9 @@
   // Отступы вокруг холста и коэффициент чёткости для PNG-экспорта.
   const EXPORT_PADDING = 24;
   const EXPORT_SCALE = 2;
+  // Дополнительный запас сверх габарита элементов (в единицах viewBox),
+  // чтобы тени и подписи не прилипали к краю PNG.
+  const EXPORT_BBOX_MARGIN = 12;
 
   const RAIL = Object.freeze({
     x: 50,
@@ -136,7 +146,8 @@
     voltmeter: 'MEASURE',
     meter: 'METER',
     terminal: 'TERMINAL',
-    busbar: 'BUS'
+    busbar: 'BUS',
+    load: 'POWER'
   });
   // Только эти модули имеют коммутационную способность и получают рычажок.
   const SWITCHABLE_MODULE_TYPES = Object.freeze(new Set([
@@ -178,352 +189,90 @@
   const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
   const ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
 
-  const LIBRARY_CATEGORIES = Object.freeze([
-    { id: 'input-protection', label: 'Ввод и защита' },
-    { id: 'differential', label: 'Дифференциальная защита' },
-    { id: 'commutation', label: 'Коммутация' },
-    { id: 'automation', label: 'Управление и автоматика' },
-    { id: 'measurement', label: 'Измерение' },
-    { id: 'terminals', label: 'Клеммы' }
-  ]);
+  /* --------------------- Библиотека из library.js ----------------------
+     Все элементы задаются в window.ELECTRIC_LIBRARY (файл library.js).
+     Здесь данные только проверяются и приводятся к безопасному виду.
+     Категории НЕ захардкожены: они собираются из поля category, поэтому
+     достаточно добавить в library.js элемент с новой категорией — группа
+     появится в левой панели автоматически.
+  --------------------------------------------------------------------- */
+  const LIBRARY_SOURCE = Array.isArray(window.ELECTRIC_LIBRARY) ? window.ELECTRIC_LIBRARY : [];
 
-  const LIBRARY = Object.freeze([
-    /* Ввод и защита */
-    {
-      id: 'incoming-breaker-2p',
-      type: 'breaker',
-      typeLabel: 'Автомат',
-      category: 'input-protection',
-      name: 'Вводной автомат 2P',
-      width: 2,
-      color: '#2563eb',
-      tagPrefix: 'QF',
-      ports: { top: 2, bottom: 2 },
-      description: 'Главный ввод и защита двухполюсной линии.'
-    },
-    {
-      id: 'incoming-breaker-3p',
-      type: 'breaker',
-      typeLabel: 'Автомат',
-      category: 'input-protection',
-      name: 'Вводной автомат 3P',
-      width: 3,
-      color: '#1d4ed8',
-      tagPrefix: 'QF',
-      ports: { top: 3, bottom: 3 },
-      description: 'Вводной трёхполюсный автомат для трёхфазной сети.'
-    },
-    {
-      id: 'breaker-1p',
-      type: 'breaker',
-      typeLabel: 'Автомат',
-      category: 'input-protection',
-      name: 'Автомат 1P C16',
-      width: 1,
-      color: '#3b82f6',
-      tagPrefix: 'QF',
-      ports: { top: 1, bottom: 1 },
-      description: 'Однополюсная защитная линия 16 А, характеристика C.'
-    },
-    {
-      id: 'breaker-1p-c25',
-      type: 'breaker',
-      typeLabel: 'Автомат',
-      category: 'input-protection',
-      name: 'Автомат 1P C25',
-      width: 1,
-      color: '#0ea5e9',
-      tagPrefix: 'QF',
-      ports: { top: 1, bottom: 1 },
-      description: 'Однополюсная линия 25 А для более мощной нагрузки.'
-    },
-    {
-      id: 'breaker-3p',
-      type: 'breaker',
-      typeLabel: 'Автомат',
-      category: 'input-protection',
-      name: 'Автомат 3P C32',
-      width: 3,
-      color: '#4f46e5',
-      tagPrefix: 'QF',
-      ports: { top: 3, bottom: 3 },
-      description: 'Трёхполюсная защита 32 А для силовой линии.'
-    },
-    {
-      id: 'rcbo-1pn',
-      type: 'rcbo',
-      typeLabel: 'Дифавтомат',
-      category: 'input-protection',
-      name: 'Дифавтомат 1P+N 16A/30mA',
-      width: 2,
-      color: '#7c3aed',
-      tagPrefix: 'QF',
-      ports: { top: 2, bottom: 2 },
-      description: 'Автомат и УЗО в одном корпусе для влажных зон.'
-    },
+  if (!Array.isArray(window.ELECTRIC_LIBRARY)) {
+    console.warn('[Щит.Студия] window.ELECTRIC_LIBRARY не найден. Подключите library.js перед script.js.');
+  }
 
-    /* Дифференциальная защита */
-    {
-      id: 'rcd',
-      type: 'rcd',
-      typeLabel: 'УЗО',
-      category: 'differential',
-      name: 'УЗО 2P 40A/30mA',
-      width: 2,
-      color: '#0f766e',
-      tagPrefix: 'QS',
-      ports: { top: 2, bottom: 2 },
-      description: 'Двухполюсное УЗО для групповых линий.'
-    },
-    {
-      id: 'rcd-4p',
-      type: 'rcd',
-      typeLabel: 'УЗО',
-      category: 'differential',
-      name: 'УЗО 4P 63A/30mA',
-      width: 4,
-      color: '#059669',
-      tagPrefix: 'QS',
-      ports: { top: 4, bottom: 4 },
-      description: 'Четырёхполюсное УЗО для трёхфазной группы.'
-    },
+  function normalizeLibraryEntry(raw, index) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
 
-    /* Коммутация */
-    {
-      id: 'contactor',
-      type: 'contactor',
-      typeLabel: 'Контактор',
-      category: 'commutation',
-      name: 'Контактор 2P',
-      width: 2,
-      color: '#9333ea',
-      tagPrefix: 'KM',
-      ports: { top: 2, bottom: 2 },
-      description: 'Двухполюсный контактор управления нагрузкой.'
-    },
-    {
-      id: 'contactor-4p',
-      type: 'contactor',
-      typeLabel: 'Контактор',
-      category: 'commutation',
-      name: 'Контактор 4P',
-      width: 4,
-      color: '#a21caf',
-      tagPrefix: 'KM',
-      ports: { top: 4, bottom: 4 },
-      description: 'Четырёхполюсный контактор для трёхфазных цепей.'
-    },
-    {
-      id: 'voltage-relay',
-      type: 'relay',
-      typeLabel: 'Реле',
-      category: 'commutation',
-      name: 'Реле напряжения',
-      width: 1,
-      color: '#dc2626',
-      tagPrefix: 'KV',
-      ports: { top: 2, bottom: 2 },
-      description: 'Защита оборудования от скачков напряжения.'
-    },
-    {
-      id: 'load-priority-relay',
-      type: 'relay',
-      typeLabel: 'Реле',
-      category: 'commutation',
-      name: 'Реле приоритета нагрузки',
-      width: 2,
-      color: '#e11d48',
-      tagPrefix: 'KV',
-      ports: { top: 2, bottom: 2 },
-      description: 'Отключает второстепенную нагрузку при перегрузке.'
-    },
+    const text = (value, fallback, maxLength) => {
+      if (typeof value !== 'string') return fallback;
+      const cleaned = value.replace(/\s+/g, ' ').trim().slice(0, maxLength);
+      return cleaned || fallback;
+    };
+    const portCount = (value) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? Math.min(10, Math.max(0, Math.round(parsed))) : 0;
+    };
 
-    /* Управление и автоматика */
-    {
-      id: 'astro-timer',
-      type: 'timer',
-      typeLabel: 'Таймер',
-      category: 'automation',
-      name: 'Астротаймер',
-      width: 2,
-      color: '#d97706',
-      tagPrefix: 'KT',
-      ports: { top: 2, bottom: 2 },
-      description: 'Включает освещение по астрономическому расписанию.'
-    },
-    {
-      id: 'impulse-relay',
-      type: 'impulse-relay',
-      typeLabel: 'Импульсное реле',
-      category: 'automation',
-      name: 'Импульсное реле',
-      width: 1,
-      color: '#ea580c',
-      tagPrefix: 'KV',
-      ports: { top: 1, bottom: 1 },
-      description: 'Управление светом с нескольких кнопок.'
-    },
-    {
-      id: 'power-supply-24v',
-      type: 'power-supply',
-      typeLabel: 'Блок питания',
-      category: 'automation',
-      name: 'Блок питания 24V',
-      width: 4,
-      color: '#ca8a04',
-      tagPrefix: 'GB',
-      ports: { top: 2, bottom: 2 },
-      description: 'Питание слаботочных устройств и автоматики.'
-    },
-
-    /* Измерение */
-    {
-      id: 'voltmeter',
-      type: 'voltmeter',
-      typeLabel: 'Вольтметр',
-      category: 'measurement',
-      name: 'Вольтметр на DIN',
-      width: 2,
-      color: '#db2777',
-      tagPrefix: 'PV',
-      ports: { top: 2, bottom: 2 },
-      description: 'Контроль напряжения в щите на лицевой панели.'
-    },
-    {
-      id: 'multifunction-meter',
-      type: 'meter',
-      typeLabel: 'Счётчик',
-      category: 'measurement',
-      name: 'Многофункциональный счётчик',
-      width: 6,
-      color: '#be185d',
-      tagPrefix: 'PI',
-      ports: { top: 4, bottom: 4 },
-      description: 'Учёт электроэнергии и параметров сети.'
-    },
-
-    /* Клеммы */
-    {
-      id: 'terminal',
-      type: 'terminal',
-      typeLabel: 'Клеммы',
-      category: 'terminals',
-      name: 'Клеммник 4 мм²',
-      width: 2,
-      color: '#4d7c0f',
-      tagPrefix: 'XT',
-      ports: { top: 1, bottom: 1 },
-      description: 'Проходные клеммы для проводников до 4 мм².'
-    },
-    {
-      id: 'terminal-10mm',
-      type: 'terminal',
-      typeLabel: 'Клеммы',
-      category: 'terminals',
-      name: 'Клеммник 10 мм²',
-      width: 2,
-      color: '#65a30d',
-      tagPrefix: 'XT',
-      ports: { top: 1, bottom: 1 },
-      description: 'Силовые клеммы для проводников до 10 мм².'
-    },
-    {
-      id: 'busbar-n',
-      type: 'busbar',
-      typeLabel: 'Шина N',
-      category: 'terminals',
-      name: 'Шина N (ноль)',
-      width: 6,
-      color: '#3b82f6',
-      tagPrefix: 'XN',
-      ports: { top: 6, bottom: 6 },
-      isBusbar: true,
-      busbarType: 'N',
-      description: 'Медная шина нуля на 6 клемм: ток, пришедший на любой порт, растекается по всей шине. Подключаются только провода N.'
-    },
-    {
-      id: 'busbar-pe',
-      type: 'busbar',
-      typeLabel: 'Шина PE',
-      category: 'terminals',
-      name: 'Шина PE (земля)',
-      width: 6,
-      color: '#65a30d',
-      tagPrefix: 'XP',
-      ports: { top: 6, bottom: 6 },
-      isBusbar: true,
-      busbarType: 'PE',
-      description: 'Серебристая шина заземления на 6 клемм: все порты становятся активными одновременно. Подключаются только провода PE.'
-    },
-    {
-      id: 'busbar-n-left',
-      type: 'busbar',
-      typeLabel: 'Шина N',
-      category: 'terminals',
-      name: 'Шина N (левая)',
-      width: 1,
-      color: '#3b82f6',
-      tagPrefix: 'XN',
-      ports: { left: 10, top: 0, bottom: 0, right: 0 },
-      isBusbar: true,
-      busType: 'N',
-      description: 'Узкая медная шина нуля в корпусе 1P: 10 клемм по левой грани. Ток с любого порта растекается на все остальные. Подключаются только провода N.'
-    },
-    {
-      id: 'busbar-n-right',
-      type: 'busbar',
-      typeLabel: 'Шина N',
-      category: 'terminals',
-      name: 'Шина N (правая)',
-      width: 1,
-      color: '#3b82f6',
-      tagPrefix: 'XN',
-      ports: { right: 10, top: 0, bottom: 0, left: 0 },
-      isBusbar: true,
-      busType: 'N',
-      description: 'Узкая медная шина нуля в корпусе 1P: 10 клемм по правой грани. Ток с любого порта растекается на все остальные. Подключаются только провода N.'
-    },
-    {
-      id: 'busbar-pe-left',
-      type: 'busbar',
-      typeLabel: 'Шина PE',
-      category: 'terminals',
-      name: 'Шина PE (левая)',
-      width: 1,
-      color: '#2563eb',
-      tagPrefix: 'XP',
-      ports: { left: 10, top: 0, bottom: 0, right: 0 },
-      isBusbar: true,
-      busType: 'PE',
-      description: 'Узкая серебристая шина заземления в корпусе 1P: 10 клемм по левой грани. Все порты активны одновременно. Подключаются только провода PE.'
-    },
-    {
-      id: 'busbar-pe-right',
-      type: 'busbar',
-      typeLabel: 'Шина PE',
-      category: 'terminals',
-      name: 'Шина PE (правая)',
-      width: 1,
-      color: '#2563eb',
-      tagPrefix: 'XP',
-      ports: { right: 10, top: 0, bottom: 0, left: 0 },
-      isBusbar: true,
-      busType: 'PE',
-      description: 'Узкая серебристая шина заземления в корпусе 1P: 10 клемм по правой грани. Все порты активны одновременно. Подключаются только провода PE.'
-    },
-    {
-      id: 'bus-connector',
-      type: 'busbar',
-      typeLabel: 'Шинный',
-      category: 'terminals',
-      name: 'Шинный соединитель',
-      width: 1,
-      color: '#0d9488',
-      tagPrefix: 'XT',
-      ports: { top: 1, bottom: 1 },
-      description: 'Соединяет соседние клеммы общей шиной.'
+    const id = text(raw.id, '', 80);
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(id)) {
+      console.warn(`[Щит.Студия] Элемент библиотеки №${index + 1} пропущен: некорректный id.`, raw);
+      return null;
     }
-  ]);
+
+    const widthValue = Number(raw.width);
+    const width = Number.isFinite(widthValue) ? Math.min(24, Math.max(1, Math.round(widthValue))) : 1;
+    const color = typeof raw.color === 'string' && /^#[0-9a-f]{6}$/i.test(raw.color)
+      ? raw.color.toLowerCase()
+      : '#3b82f6';
+    const rawPorts = raw.ports && typeof raw.ports === 'object' ? raw.ports : {};
+    const busType = raw.busType === 'N' || raw.busType === 'PE'
+      ? raw.busType
+      : (raw.busbarType === 'N' || raw.busbarType === 'PE' ? raw.busbarType : null);
+    const type = text(raw.type, 'other', 24);
+
+    return {
+      id,
+      category: text(raw.category, 'Разное', 60),
+      name: text(raw.name, id, 60),
+      type,
+      typeLabel: text(raw.typeLabel, type, 40),
+      width,
+      color,
+      tagPrefix: text(raw.tagPrefix, 'M', 10),
+      ports: {
+        top: portCount(rawPorts.top),
+        right: portCount(rawPorts.right),
+        bottom: portCount(rawPorts.bottom),
+        left: portCount(rawPorts.left)
+      },
+      isBusbar: raw.isBusbar === true || busType !== null,
+      busType,
+      busbarType: busType,
+      brand: text(raw.brand, '', 60),
+      sku: text(raw.sku, '', 60),
+      power: normalizeLoadPower(raw.power, DEFAULT_LOAD_POWER),
+      description: text(raw.description, '', 600)
+    };
+  }
+
+  const seenLibraryIds = new Set();
+  const LIBRARY = Object.freeze(
+    LIBRARY_SOURCE.map(normalizeLibraryEntry).filter((item) => {
+      if (!item || seenLibraryIds.has(item.id)) return false;
+      seenLibraryIds.add(item.id);
+      return true;
+    })
+  );
+
+  // Категории формируются автоматически из поля category каждого элемента.
+  // Порядок групп соответствует порядку первого появления категории.
+  const LIBRARY_CATEGORIES = Object.freeze(
+    LIBRARY.length > 0
+      ? [...new Set(LIBRARY.map((item) => item.category))].map((label) => ({ id: label, label }))
+      : [{ id: 'Разное', label: 'Разное' }]
+  );
 
   const LIBRARY_BY_ID = new Map(LIBRARY.map((item) => [item.id, item]));
   const LIBRARY_ORDER = new Map(LIBRARY.map((item, index) => [item.id, index]));
@@ -540,7 +289,8 @@
     voltmeter: 'Вольтметр',
     meter: 'Счётчик',
     terminal: 'Клеммы',
-    busbar: 'Шинный'
+    busbar: 'Шинный',
+    load: 'Нагрузка'
   });
 
   /* ------------------------------- DOM -------------------------------- */
@@ -560,12 +310,18 @@
     exportCsv: document.getElementById('export-csv'),
     exportCsvSecondary: document.getElementById('export-csv-secondary'),
     exportPng: document.getElementById('export-png'),
+    downloadProject: document.getElementById('download-project'),
+    importProject: document.getElementById('import-project'),
+    importFile: document.getElementById('import-file'),
     zoomInBtn: document.getElementById('zoom-in'),
     zoomOutBtn: document.getElementById('zoom-out'),
     zoomLevel: document.getElementById('zoom-level'),
     resetViewBtn: document.getElementById('reset-view'),
     simulationToggle: document.getElementById('simulation-toggle'),
     simulationState: document.getElementById('simulation-state'),
+    paramsToggle: document.getElementById('params-toggle'),
+    paramsState: document.getElementById('params-state'),
+    elementTooltip: document.getElementById('element-tooltip'),
     clearProject: document.getElementById('clear-project'),
     canvasShell: document.getElementById('canvas-shell'),
     canvas: document.getElementById('panel-canvas'),
@@ -578,6 +334,7 @@
     moduleLayer: document.getElementById('layer-modules'),
     portLayer: document.getElementById('layer-ports'),
     previewLayer: document.getElementById('layer-preview'),
+    selectionBox: document.getElementById('selection-box'),
     wireTypePopover: document.getElementById('wire-type-popover'),
     wireTypeCancel: document.getElementById('wire-type-cancel'),
     portTooltip: document.getElementById('port-tooltip'),
@@ -630,6 +387,10 @@
   // Используется рендером для подсветки клемм шин.
   let livePorts = new Set();
   let selectedConnectionId = null;
+  // Идентификаторы модулей, выделенных рамкой / Shift+кликом.
+  const selectedModuleIds = new Set();
+  // Активный жест рамки: { startX, startY, clientX, clientY, moved, shiftKey }.
+  let selectionBoxState = null;
   let gesture = null;
   let dragState = null;
   // Состояние viewBox: x/y — левый верхний угол в координатах схемы,
@@ -654,7 +415,7 @@
   // не должны «откатываться» вместе со структурой щита.
   let history = [];
   let historyIndex = -1;
-  const libraryOpenState = new Set([LIBRARY_CATEGORIES[0].id]);
+  const libraryOpenState = new Set(LIBRARY_CATEGORIES.length ? [LIBRARY_CATEGORIES[0].id] : []);
   const bootNotices = [];
 
   /* ----------------------------- Utilities ---------------------------- */
@@ -671,6 +432,50 @@
 
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
+  }
+
+  // Мощность нагрузки хранится в ваттах и всегда приводится к безопасному
+  // целому числу в допустимом диапазоне (и для библиотеки, и для проекта).
+  function normalizeLoadPower(value, fallback = DEFAULT_LOAD_POWER) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return clamp(Math.round(parsed), MIN_LOAD_POWER, MAX_LOAD_POWER);
+  }
+
+  function isLoadModule(module) {
+    return Boolean(module) && (
+      module.type === 'load' || LIBRARY_BY_ID.get(module.libraryId)?.type === 'load'
+    );
+  }
+
+  // Номинал защитного аппарата (C16 -> 16, "25A" -> 25). Используется
+  // для проверки перегрузки: ток нагрузки больше номинала -> красный автомат.
+  function protectiveRating(module) {
+    if (!module) return null;
+    const explicit = Number(module.ratedCurrent);
+    if (Number.isFinite(explicit) && explicit > 0) return explicit;
+
+    const fromName = (name) => {
+      const text = String(name || '');
+      const match = text.match(/\bC\s?(\d{1,3})\b/i) || text.match(/\b(\d{1,3})\s*A\b/i);
+      if (!match) return null;
+      const value = Number(match[1]);
+      return Number.isFinite(value) && value > 0 ? value : null;
+    };
+    return fromName(module.name) || fromName(LIBRARY_BY_ID.get(module.libraryId)?.name);
+  }
+
+  // Короткие подписи для плашек на проводах и корпусе нагрузки.
+  function formatCurrent(value) {
+    const amps = Number(value) || 0;
+    const text = Math.abs(amps) < 1000
+      ? amps.toFixed(1).replace(/\.0$/, '')
+      : Math.round(amps).toString();
+    return `${text}A`;
+  }
+
+  function formatPower(value) {
+    return `${Math.round(Number(value) || 0)}W`;
   }
 
   function sumWidths(modules) {
@@ -1026,7 +831,17 @@
   }
 
   function moduleBrand(module) {
-    return MODULE_BRANDS[module?.type] || 'DINPRO';
+    // Бренд задаётся в library.js; старые/неизвестные модули получают
+    // резервное значение по типу, чтобы лицевая панель не пустовала.
+    const libraryBrand = LIBRARY_BY_ID.get(module?.libraryId)?.brand;
+    return safeText(libraryBrand, '', 60) || MODULE_BRANDS[module?.type] || 'DINPRO';
+  }
+
+  // Артикул тоже хранится в базе элементов, а не в сохранённом проекте:
+  // редактирование library.js сразу отражается в спецификации и CSV.
+  function moduleSku(module) {
+    const librarySku = LIBRARY_BY_ID.get(module?.libraryId)?.sku;
+    return safeText(librarySku, '', 60) || '';
   }
 
   function moduleHasSwitch(module) {
@@ -1684,6 +1499,14 @@
     // Сохраняем для рендера: по этим портам подсвечиваются клеммы шин.
     livePorts = activePorts;
 
+    // ---------------------------------------------------------------------
+    // Расчёт тока, напряжения и мощности.
+    // Каждая включённая нагрузка потребляет I = P / 230 (однофазная сеть).
+    // Ток «поднимается» от нагрузки к источнику по дереву обхода графа,
+    // складываясь на общих участках цепи. Результат пишется в провода
+    // (current / voltage) и модули (current), чтобы его можно было показать
+    // на схеме и проверить перегрузку защитных аппаратов.
+    // ---------------------------------------------------------------------
     for (const connection of project.connections) {
       const fromPort = makePortId(
         connection.fromModuleId, connection.fromPortSide, connection.fromPortIndex
@@ -1692,6 +1515,169 @@
         connection.toModuleId, connection.toPortSide, connection.toPortIndex
       );
       connection.isLive = activePorts.has(fromPort) && activePorts.has(toPort);
+      const isReturnWire = connection.type === 'N' || connection.type === 'PE';
+      connection.voltage = connection.isLive && !isReturnWire ? NOMINAL_VOLTAGE : 0;
+      connection.current = 0;
+      connection.overloaded = false;
+      connection.ratedLimit = null;
+    }
+    for (const module of modules) {
+      module.current = 0;
+      module.overloaded = false;
+    }
+
+    // Граф: вершины — активные клеммы, рёбра — провода и внутренние
+    // соединения модулей (у шин все клеммы соединены между собой).
+    const adjacency = new Map();
+    const addEdge = (edge, a, b) => {
+      if (!adjacency.has(a)) adjacency.set(a, []);
+      if (!adjacency.has(b)) adjacency.set(b, []);
+      adjacency.get(a).push({ edge, to: b });
+      adjacency.get(b).push({ edge, to: a });
+    };
+
+    for (const connection of project.connections) {
+      if (!connection.isLive) continue;
+      const a = makePortId(
+        connection.fromModuleId, connection.fromPortSide, connection.fromPortIndex
+      );
+      const b = makePortId(
+        connection.toModuleId, connection.toPortSide, connection.toPortIndex
+      );
+      addEdge({ kind: 'wire', ref: connection, rating: null }, a, b);
+    }
+
+    for (const module of modules) {
+      if (module.isOn === false) continue;
+      const counts = portsForModule(module);
+      const rating = protectiveRating(module);
+      const livePortsOf = (side) => {
+        const result = [];
+        for (let index = 0; index < counts[side]; index += 1) {
+          const id = makePortId(module.id, side, index);
+          if (activePorts.has(id)) result.push(id);
+        }
+        return result;
+      };
+
+      const groups = [];
+      if (isBusbarModule(module)) {
+        const all = PORT_SIDES.flatMap((side) => livePortsOf(side));
+        if (all.length > 1) groups.push(all);
+      } else {
+        const top = livePortsOf('top');
+        const bottom = livePortsOf('bottom');
+        if (top.length && bottom.length) {
+          for (const a of top) {
+            for (const b of bottom) {
+              addEdge({ kind: 'module', ref: module, rating }, a, b);
+            }
+          }
+        } else {
+          const all = [...top, ...bottom];
+          if (all.length > 1) groups.push(all);
+        }
+      }
+      for (const group of groups) {
+        for (let i = 0; i < group.length; i += 1) {
+          for (let j = i + 1; j < group.length; j += 1) {
+            addEdge({ kind: 'module', ref: module, rating }, group[i], group[j]);
+          }
+        }
+      }
+    }
+
+    // Дерево обхода от источника: по нему ток каждой нагрузки идёт наверх.
+    const roots = [];
+    if (project?.source?.isOn !== false) {
+      for (let index = 0; index < POWER_SOURCE.ports.length; index += 1) {
+        const id = makePortId(POWER_SOURCE.id, 'bottom', index);
+        if (activePorts.has(id)) roots.push(id);
+      }
+    }
+    const visited = new Set(roots);
+    const parent = new Map();
+    const bfsOrder = roots.slice();
+    const queue = roots.slice();
+    for (let cursor = 0; cursor < queue.length; cursor += 1) {
+      const node = queue[cursor];
+      for (const link of adjacency.get(node) || []) {
+        if (visited.has(link.to)) continue;
+        visited.add(link.to);
+        parent.set(link.to, { edge: link.edge, from: node });
+        bfsOrder.push(link.to);
+        queue.push(link.to);
+      }
+    }
+
+    // Заявки нагрузок: I = P / 230. Мощность нормализуется и сохраняется
+    // в модуле, чтобы двойной клик и JSON-экспорт работали с одним значением.
+    const demand = [];
+    for (const module of modules) {
+      if (!isLoadModule(module) || module.isOn === false) continue;
+      module.power = normalizeLoadPower(module.power, DEFAULT_LOAD_POWER);
+      if (!moduleHasLivePort(module, activePorts)) continue;
+
+      const counts = portsForModule(module);
+      let entryPort = null;
+      for (let index = 0; index < counts.top && !entryPort; index += 1) {
+        const id = makePortId(module.id, 'top', index);
+        if (activePorts.has(id)) entryPort = id;
+      }
+      if (!entryPort) {
+        for (const side of PORT_SIDES) {
+          for (let index = 0; index < counts[side]; index += 1) {
+            const id = makePortId(module.id, side, index);
+            if (activePorts.has(id)) { entryPort = id; break; }
+          }
+          if (entryPort) break;
+        }
+      }
+
+      const amps = module.power / NOMINAL_VOLTAGE;
+      module.current = amps;
+      if (entryPort && visited.has(entryPort)) demand.push([entryPort, amps]);
+    }
+
+    // Поднимаем ток по дереву от нагрузки к источнику и складываем его
+    // на всех пройденных рёбрах (провадах и внутренних переходах модулей).
+    for (const [portId, amps] of demand) {
+      let node = portId;
+      while (parent.has(node)) {
+        const step = parent.get(node);
+        step.edge.ref.current = (Number(step.edge.ref.current) || 0) + amps;
+        node = step.from;
+      }
+    }
+    for (const connection of project.connections) {
+      connection.current = Math.round((Number(connection.current) || 0) * 100) / 100;
+    }
+    for (const module of modules) {
+      module.current = Math.round((Number(module.current) || 0) * 100) / 100;
+    }
+
+    // Предел тока для провода — минимальный номинал защитного аппарата
+    // выше по цепи. Превышение окрашивает плашку провода в красный.
+    const nodeLimit = new Map();
+    for (const node of bfsOrder) {
+      const step = parent.get(node);
+      let limit = Infinity;
+      if (step) {
+        const parentLimit = nodeLimit.get(step.from);
+        limit = step.edge.rating ? Math.min(parentLimit, step.edge.rating) : parentLimit;
+        if (step.edge.kind === 'wire' && Number.isFinite(limit)) {
+          step.edge.ref.ratedLimit = limit;
+        }
+      }
+      nodeLimit.set(node, limit);
+    }
+    for (const connection of project.connections) {
+      const limit = connection.ratedLimit;
+      connection.overloaded = Boolean(limit) && connection.current > limit + 0.001;
+    }
+    for (const module of modules) {
+      const rating = protectiveRating(module);
+      module.overloaded = Boolean(rating) && module.current > rating + 0.001;
     }
 
     return activePorts;
@@ -1699,6 +1685,10 @@
 
   function isSimulationOn() {
     return project?.simulation !== false;
+  }
+
+  function isShowingParams() {
+    return project?.showParams !== false;
   }
 
   /* -------------------------- Project factories ------------------------ */
@@ -1715,6 +1705,7 @@
       connections: [],
       source: { isOn: true },
       simulation: true,
+      showParams: true,
       updatedAt: new Date().toISOString()
     };
   }
@@ -1734,6 +1725,7 @@
       busbarType: libraryItem.busType || libraryItem.busbarType || null,
       tag: tag || generateTag(libraryItem.tagPrefix, project ? allModules() : []),
       isOn: true,
+      power: normalizeLoadPower(libraryItem.power, DEFAULT_LOAD_POWER),
       description: ''
     };
   }
@@ -1768,6 +1760,7 @@
         busbarType: libraryItem.busType || libraryItem.busbarType || null,
         tag,
         isOn: true,
+        power: normalizeLoadPower(libraryItem.power, DEFAULT_LOAD_POWER),
         description: ''
       };
     });
@@ -1935,6 +1928,10 @@
             libraryItem?.busType || libraryItem?.busbarType || null,
           tag,
           isOn: rawModule.isOn !== false,
+          power: normalizeLoadPower(
+            rawModule.power !== undefined ? rawModule.power : libraryItem?.power,
+            DEFAULT_LOAD_POWER
+          ),
           description: safeText(rawModule.description, '', MAX_MODULE_DESCRIPTION_LENGTH)
         };
         modules.push(module);
@@ -2051,6 +2048,7 @@
       connections,
       source: { isOn: raw.source?.isOn !== false },
       simulation: raw.simulation !== false,
+      showParams: raw.showParams !== false,
       updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : new Date().toISOString()
     };
   }
@@ -2141,9 +2139,10 @@
         showMigrationBanner = true;
         migrationNotice = MIGRATION_NOTICE;
       } else if (needsSchemaMigration) {
-        // v4 -> v5: order заменён на slot, пустые места теперь сохраняются.
         showMigrationBanner = true;
-        migrationNotice = 'Проект обновлён: порядок модулей заменён слотами, пустые места сохраняются';
+        migrationNotice = Number.isFinite(storedVersion) && storedVersion < 6
+          ? 'Проект обновлён: добавлены мощность нагрузки и параметры сети (В / А / Вт)'
+          : 'Проект обновлён: порядок модулей заменён слотами, пустые места сохраняются';
       }
       if (needsWireMigration || needsTagMigration || needsSchemaMigration || needsSwitchMigration) persistProject();
       else setSaveState('saved');
@@ -2203,6 +2202,7 @@
 
     resetInteractionState();
     clearConnectionDraft();
+    clearSelection();
     selectedConnectionId = null;
     suppressCanvasClickUntil = performance.now() + 250;
 
@@ -2230,11 +2230,16 @@
   function libraryCardMarkup(item) {
     const category = LIBRARY_CATEGORY_BY_ID.get(item.category);
     const moduleLabel = `${item.width} ${plural(item.width, ['модуль', 'модуля', 'модулей'])}`;
+    const details = [
+      item.description,
+      item.brand ? `Бренд: ${item.brand}` : '',
+      item.sku ? `Артикул: ${item.sku}` : ''
+    ].filter(Boolean).join(' · ');
     return `
       <button class="component-card" type="button" data-library-id="${escapeHtml(item.id)}"
               style="--component-color:${item.color}"
-              title="${escapeHtml(item.description)}"
-              aria-label="${escapeHtml(`${item.name}, категория ${category?.label || '—'}, тег ${item.tagPrefix}, ширина ${moduleLabel}. ${item.description} Перетащите на рейку или нажмите, чтобы добавить.`)}">
+              title="${escapeHtml(details)}"
+              aria-label="${escapeHtml(`${item.name}, категория ${category?.label || '—'}, тег ${item.tagPrefix}, ширина ${moduleLabel}. ${details} Перетащите на рейку или нажмите, чтобы добавить.`)}">
         <span class="component-icon" aria-hidden="true">
           <svg viewBox="0 0 32 32" fill="none">
             <rect class="component-icon-shell" x="5.5" y="7.5" width="21" height="17" rx="3.2"/>
@@ -2308,6 +2313,8 @@
           category?.label || '',
           item.tagPrefix,
           item.typeLabel,
+          item.brand,
+          item.sku,
           item.description
         ].join(' ').toLocaleLowerCase('ru');
         const matches = !query || categoryMatches || searchText.includes(query);
@@ -2794,16 +2801,25 @@
       const effectiveBadgeWidth = customLabelText ? wireLabelWidth(customLabelText) : badgeWidth;
       const badgeX = layout.badge.x;
       const badgeY = layout.badge.y;
+      // Режим параметров: по центру провода — плашка с силой тока.
+      const showParams = isShowingParams() && isSimulationOn() && connection.isLive;
+      const labelY = badgeY + (showParams ? -17 : 0);
       // У чёрного L2 на тёмном холсте нужен светлый контур, иначе линия теряется.
       const outline = typeKey === 'L2'
         ? `<polyline class="wire-outline" points="${points}"/>`
         : '';
-      const customLabel = wireLabelMarkup(connection, badgeX, badgeY);
+      const customLabel = wireLabelMarkup(connection, badgeX, labelY);
       const typeBadge = customLabel ? '' : `
-          <g class="wire-badge" transform="translate(${badgeX.toFixed(1)} ${badgeY.toFixed(1)})" pointer-events="none">
+          <g class="wire-badge" transform="translate(${badgeX.toFixed(1)} ${labelY.toFixed(1)})" pointer-events="none">
             <rect x="${-badgeWidth / 2}" y="-9" width="${badgeWidth}" height="18" rx="9" fill="${color}"/>
             <text class="${tagTextClass(color)}" x="0" y="3.4">${type.label}</text>
           </g>`;
+      const currentBadge = showParams ? `
+          <g class="wire-current-badge${connection.overloaded ? ' is-overloaded' : ''}"
+             transform="translate(${badgeX.toFixed(1)} ${badgeY.toFixed(1)})" pointer-events="none">
+            <rect class="wire-current-bg" x="-22" y="-9" width="44" height="18" rx="7"/>
+            <text class="wire-current-text" x="0" y="4">${escapeHtml(formatCurrent(connection.current))}</text>
+          </g>` : '';
       const deleteButton = isSelected ? `
         <g class="wire-delete" data-delete-wire="${escapeHtml(connection.id)}"
            transform="translate(${(badgeX + effectiveBadgeWidth / 2 + 10).toFixed(1)} ${badgeY.toFixed(1)})"
@@ -2815,10 +2831,10 @@
         </g>` : '';
 
       return `
-        <g class="wire wire--${typeKey.toLowerCase()}${isSelected ? ' is-selected' : ''}${flowClass}"
+        <g class="wire wire--${typeKey.toLowerCase()}${isSelected ? ' is-selected selected' : ''}${flowClass}"
            data-wire-id="${escapeHtml(connection.id)}"
            style="--wire-color:${color};color:${color}">
-          <title>${escapeHtml(`${label}. ${type.name}. ${connection.isLive ? 'Под напряжением. ' : ''}Двойной клик — маркировка провода.`)}</title>
+          <title>${escapeHtml(`${label}. ${type.name}. ${connection.isLive ? 'Под напряжением. ' : ''}${showParams ? `Напряжение ${connection.voltage} В, ток ${formatCurrent(connection.current)}. ` : ''}Двойной клик — маркировка провода.`)}</title>
           <polyline class="wire-halo" points="${points}" data-connection-id="${escapeHtml(connection.id)}"
                     tabindex="0" role="button"
                     aria-label="${escapeHtml(`${label}, ${type.name}. Enter — выделить, Delete — удалить, двойной клик — маркировка.`)}"/>
@@ -2826,6 +2842,7 @@
           <polyline class="wire-path" points="${points}"/>
           ${customLabel}
           ${typeBadge}
+          ${currentBadge}
           ${deleteButton}
         </g>`;
     }).join('');
@@ -3076,6 +3093,99 @@
     dom.portPhaseTooltip.hidden = true;
   }
 
+  /* Подсказка с параметрами сети при наведении на модуль или провод. */
+  function hideElementTooltip() {
+    if (dom.elementTooltip) dom.elementTooltip.hidden = true;
+  }
+
+  function elementParams(target) {
+    const wireEl = target.closest?.('[data-wire-id]');
+    if (wireEl) {
+      const connection = project.connections.find(
+        (item) => item.id === wireEl.getAttribute('data-wire-id')
+      );
+      if (!connection) return null;
+      const voltage = Number(connection.voltage) || 0;
+      const current = Number(connection.current) || 0;
+      return {
+        title: connectionLabel(connection),
+        subtitle: `${connection.type} · ${connection.isLive ? 'под напряжением' : 'обесточен'}`,
+        voltage,
+        current,
+        power: voltage * current,
+        overloaded: Boolean(connection.overloaded)
+      };
+    }
+
+    const moduleEl = target.closest?.('[data-module-id]');
+    if (!moduleEl) return null;
+    const moduleId = moduleEl.getAttribute('data-module-id');
+    if (moduleId === POWER_SOURCE.id) {
+      return {
+        title: POWER_SOURCE.label,
+        subtitle: 'ввод 3Ф + N + PE',
+        voltage: project?.source?.isOn !== false ? NOMINAL_VOLTAGE : 0,
+        current: 0,
+        power: 0,
+        overloaded: false
+      };
+    }
+    const module = moduleById(moduleId);
+    if (!module) return null;
+    const voltage = isSimulationOn() && moduleHasLivePort(module, livePorts) ? NOMINAL_VOLTAGE : 0;
+    const current = Number(module.current) || 0;
+    const load = isLoadModule(module);
+    return {
+      title: `${module.tag} · ${module.name}`,
+      subtitle: load ? `нагрузка ${formatPower(module.power)}` : typeLabelFor(module),
+      voltage,
+      current,
+      power: load ? normalizeLoadPower(module.power, DEFAULT_LOAD_POWER) : voltage * current,
+      overloaded: isModuleOverloaded(module)
+    };
+  }
+
+  function onElementPointerOver(event) {
+    if (!dom.elementTooltip || editing) {
+      hideElementTooltip();
+      return;
+    }
+    // У клемм есть собственная подсказка с фазой — не перекрываем её.
+    if (event.target.closest?.('[data-port-id]')) {
+      hideElementTooltip();
+      return;
+    }
+    const params = elementParams(event.target);
+    if (!params) {
+      hideElementTooltip();
+      return;
+    }
+    dom.elementTooltip.innerHTML = `
+      <strong>${escapeHtml(params.title)}</strong>
+      <small>${escapeHtml(params.subtitle)}</small>
+      <span class="element-tooltip-grid">
+        <span>Напряжение</span><b>${Math.round(params.voltage)} В</b>
+        <span>Ток</span><b>${escapeHtml(formatCurrent(params.current))}</b>
+        <span>Мощность</span><b>${escapeHtml(formatPower(params.power))}</b>
+      </span>
+      ${params.overloaded ? '<span class="element-tooltip-warning">⚠️ Перегрузка</span>' : ''}`;
+    dom.elementTooltip.hidden = false;
+
+    const wrapRect = dom.svgWrap.getBoundingClientRect();
+    const width = dom.elementTooltip.offsetWidth || 190;
+    const height = dom.elementTooltip.offsetHeight || 90;
+    const left = clamp(event.clientX - wrapRect.left + 14, 6, Math.max(6, wrapRect.width - width - 6));
+    const top = clamp(event.clientY - wrapRect.top - height - 12, 6, Math.max(6, wrapRect.height - height - 6));
+    dom.elementTooltip.style.left = `${left}px`;
+    dom.elementTooltip.style.top = `${top}px`;
+  }
+
+  function onElementPointerOut(event) {
+    const next = event.relatedTarget;
+    if (next && (next.closest?.('[data-module-id]') || next.closest?.('[data-wire-id]'))) return;
+    hideElementTooltip();
+  }
+
   // Шина — не обычный корпус автомата, а металлическая полоса с рядом
   // винтов-клемм сверху и снизу. Отрисовывается отдельно от стандартных
   // модулей, но сохраняет те же data-атрибуты, удаление и фокус.
@@ -3219,6 +3329,85 @@
       </g>`;
   }
 
+  function isModuleOverloaded(module) {
+    return isSimulationOn() && Boolean(module?.overloaded);
+  }
+
+  function overloadWarningMarkup(overloaded, width) {
+    return overloaded
+      ? `<text class="module-warning" x="${(width - 7).toFixed(1)}" y="13"
+              text-anchor="end" aria-label="Перегрузка">⚠️</text>`
+      : '';
+  }
+
+  // Потребитель: 1P-корпус с значком лампочки и подписью мощности.
+  // Мощность редактируется двойным кликом и сохраняется в модуле.
+  function buildLoadModuleMarkup(module, x, y, options) {
+    const { isGhost, isInvalidGhost, isPending, color } = options;
+    const width = module.width * MODULE_UNIT;
+    const radius = 9;
+    const overloaded = !isGhost && isModuleOverloaded(module);
+    const power = formatPower(module.power);
+    const bottomCount = clamp(portsForModule(module).bottom, 1, 8);
+    const showParams = isShowingParams() && isSimulationOn();
+
+    const terminalMarkup = Array.from({ length: bottomCount }, (_, index) => {
+      const center = ((index + 1) * width) / (bottomCount + 1);
+      return `
+        <g class="module-terminal" transform="translate(${center.toFixed(1)} ${MODULE_HEIGHT - 12})">
+          <circle class="module-terminal-head" r="4.4"/>
+          <path class="module-terminal-cross" d="M -2.2 0 H 2.2 M 0 -2.2 V 2.2"/>
+        </g>`;
+    }).join('');
+
+    const deleteButton = isGhost ? '' : `
+      <g class="module-delete" data-delete-module="${escapeHtml(module.id)}"
+         transform="translate(${width - 11} ${MODULE_HEIGHT - 12})" tabindex="0" role="button"
+         aria-label="${escapeHtml(`Удалить модуль ${module.tag}`)}">
+        <circle class="module-delete-hit" r="14"/>
+        <circle class="module-delete-bg" r="8.5"/>
+        <path class="module-delete-x" d="M -2.7 -2.7 L 2.7 2.7 M 2.7 -2.7 L -2.7 2.7"/>
+      </g>`;
+
+    const interactiveAttributes = isGhost
+      ? 'aria-hidden="true"'
+      : `tabindex="0" role="group"
+         aria-label="${escapeHtml(`${module.tag}: ${module.name}, мощность ${power}. Двойной клик — изменить мощность, порты сверху и снизу создают провода.`)}"`;
+
+    return `
+      <g class="module module--body-light module--load${isGhost ? ' module--ghost' : ''}${isInvalidGhost ? ' module--ghost-invalid' : ''}${isPending ? ' is-pending' : ''}${overloaded ? ' is-overloaded' : ''}"
+         data-module-id="${escapeHtml(module.id)}" transform="translate(${x} ${y})"
+         style="--module-accent:${color}" ${interactiveAttributes}>
+        <title>${escapeHtml(`${module.tag} · ${module.name} · ${power}${overloaded ? ' · перегрузка' : ''}`)}</title>
+        <rect class="module-shadow-plate" x="1" y="3" width="${width}" height="${MODULE_HEIGHT}" rx="${radius}"/>
+        <rect class="module-card" x="0" y="0" width="${width}" height="${MODULE_HEIGHT}" rx="${radius}"
+              stroke="${color}"/>
+        <rect class="module-gloss" x="1.5" y="1.5" width="${width - 3}" height="34" rx="7"/>
+        <path class="module-band" d="M 0 ${radius} Q 0 0 ${radius} 0 H ${width - radius} Q ${width} 0 ${width} ${radius} V 30 H 0 Z" fill="${color}"/>
+        <path class="module-band-outline"
+              d="M 0 ${radius} Q 0 0 ${radius} 0 H ${width - radius} Q ${width} 0 ${width} ${radius} V 30 H 0 Z"/>
+        <text class="module-band-text ${tagTextClass(color)}" x="${width / 2}" y="21">${escapeHtml(module.tag)}</text>
+        ${overloadWarningMarkup(overloaded, width)}
+        <g class="load-icon" transform="translate(${(width / 2).toFixed(1)} 68)">
+          <path class="load-bulb-glass"
+                d="M 0 -16 C -10 -16 -16 -9 -16 0 C -16 7 -12 11 -8 15 H 8 C 12 11 16 7 16 0 C 16 -9 10 -16 0 -16 Z"/>
+          <path class="load-bulb-filament" d="M -6 5 L -2 -3 L 2 5 L 6 -3"/>
+          <rect class="load-bulb-base" x="-7" y="15" width="14" height="5" rx="1.5"/>
+          <path class="load-bulb-rays"
+                d="M 0 -23 V -19 M -14 -17 L -11 -14 M 14 -17 L 11 -14 M -19 0 H -15 M 19 0 H 15"/>
+        </g>
+        <text class="module-name" x="${width / 2}" y="109">${escapeHtml(truncateLabel(module.name, 8))}</text>
+        ${showParams ? `<text class="module-power${overloaded ? ' is-overloaded' : ''}" x="${width / 2}" y="128">${escapeHtml(power)}</text>` : ''}
+        <rect class="module-terminal-panel" x="1" y="${MODULE_HEIGHT - 22}" width="${width - 2}" height="21" rx="5"/>
+        <line class="module-divider" x1="7" y1="${MODULE_HEIGHT - 19}" x2="${width - 7}" y2="${MODULE_HEIGHT - 19}"/>
+        ${terminalMarkup}
+        <text class="module-width" x="7" y="${MODULE_HEIGHT - 7}">${module.width}P</text>
+        ${deleteButton}
+        <rect class="module-focus-ring" x="-4" y="-4" width="${width + 8}" height="${MODULE_HEIGHT + 8}"
+              rx="13" fill="none" stroke="${color}"/>
+      </g>`;
+  }
+
   function buildModuleMarkup(module, x, index, isInvalidGhost = false, y = RAIL.moduleY) {
     const width = module.width * MODULE_UNIT;
     const isGhost = Boolean(module.__ghost);
@@ -3226,6 +3415,9 @@
     const isPending = !isGhost && (
       activePort?.moduleId === module.id || pendingWire?.moduleId === module.id
     );
+    if (isLoadModule(module)) {
+      return buildLoadModuleMarkup(module, x, y, { isGhost, isInvalidGhost, isPending, color, index });
+    }
     if (isBusbarModule(module)) {
       const counts = portsForModule(module);
       if (counts.left > 0 || counts.right > 0) {
@@ -3245,6 +3437,7 @@
     const bottomCount = clamp(portsForModule(module).bottom, 1, 8);
     const switchable = moduleHasSwitch(module);
     const isOn = module.isOn !== false;
+    const overloaded = !isGhost && isModuleOverloaded(module);
 
     const bandPath = `M 0 ${radius} Q 0 0 ${radius} 0 H ${width - radius} Q ${width} 0 ${width} ${radius} V ${bandHeight} H 0 Z`;
     const nameY = switchable
@@ -3329,7 +3522,7 @@
          aria-label="${escapeHtml(`${module.tag}: ${module.name}, ширина ${module.width} ${modulesWord}.${switchable ? ` Сейчас ${isOn ? 'включён' : 'отключён'}.` : ''} Перетаскивание меняет слот; порты сверху и снизу создают провода.`)}"`;
 
     return `
-      <g class="module module--body-${bodyVariant}${isGhost ? ' module--ghost' : ''}${isInvalidGhost ? ' module--ghost-invalid' : ''}${isPending ? ' is-pending' : ''}"
+      <g class="module module--body-${bodyVariant}${isGhost ? ' module--ghost' : ''}${isInvalidGhost ? ' module--ghost-invalid' : ''}${isPending ? ' is-pending' : ''}${overloaded ? ' is-overloaded' : ''}"
          data-module-id="${escapeHtml(module.id)}" transform="translate(${x} ${y})"
          style="--module-accent:${color}" ${interactiveAttributes}>
         <title>${escapeHtml(`${module.tag} · ${module.name}`)}</title>
@@ -3340,6 +3533,7 @@
         <path class="module-band" d="${bandPath}" fill="${color}"/>
         <path class="module-band-outline" d="${bandPath}"/>
         <text class="module-band-text ${tagTextClass(color)}" x="${width / 2}" y="${bandHeight - 9}">${escapeHtml(module.tag)}</text>
+        ${overloadWarningMarkup(overloaded, width)}
         ${switchMarkup}
         ${circuit}
         <text class="module-rating" x="${panelCenterX.toFixed(1)}" y="${MODULE_HEIGHT - 50}">${escapeHtml(rating)}</text>
@@ -3804,6 +3998,7 @@
     }).join('');
 
     dom.moduleLayer.innerHTML = moduleMarkup;
+    updateSelectionClasses();
     dom.sourceLayer.innerHTML = buildSourceMarkup();
     dom.wireLayer.innerHTML = buildWiresMarkup(buildWireLayouts(positions));
     const occupancy = getPortOccupancy();
@@ -3849,6 +4044,8 @@
           typeLabel: typeLabelFor(module),
           width: module.width,
           color: module.color,
+          brand: moduleBrand(module),
+          sku: moduleSku(module),
           count: 0,
           tags: [],
           descriptions: [],
@@ -3891,7 +4088,7 @@
     if (specification.length === 0) {
       dom.specBody.innerHTML = `
         <tr>
-          <td colspan="3" class="spec-empty">Пока пусто. Перетащите компонент из библиотеки на DIN-рейку.</td>
+          <td colspan="5" class="spec-empty">Пока пусто. Перетащите компонент из библиотеки на DIN-рейку.</td>
         </tr>`;
     } else {
       dom.specBody.innerHTML = specification.map((item) => `
@@ -3905,6 +4102,8 @@
               </span>
             </span>
           </td>
+          <td class="brand-col" title="${escapeHtml(item.brand || '')}">${escapeHtml(item.brand || '—')}</td>
+          <td class="sku-col" title="${escapeHtml(item.sku || '')}">${escapeHtml(item.sku || '—')}</td>
           <td class="tag-col">
             <span class="spec-tags">
               ${item.tags.map((tag) => `<span class="spec-tag">${escapeHtml(tag)}</span>`).join('')}
@@ -4023,6 +4222,7 @@
 
   function renderAll() {
     closeInlineEditor();
+    hideElementTooltip();
     calculatePowerFlow();
     renderCanvas();
     renderSpecification();
@@ -4124,6 +4324,172 @@
     gesture = null;
     dragState = null;
     document.body.classList.remove('is-dragging');
+  }
+
+  /* ------------------------ Selection box (рамка) ----------------------- */
+
+  // Прямоугольник модуля в координатах схемы. Положение однозначно
+  // определяется рейкой и слотом, поэтому hit-test не зависит от рендера
+  // и работает одинаково при любом зуме/панораме.
+  function moduleBounds(moduleId) {
+    const location = railOfModule(moduleId);
+    if (!location) return null;
+    return {
+      x: moduleSlotX(location.module.slot),
+      y: railModuleY(location.index),
+      width: location.module.width * MODULE_UNIT,
+      height: MODULE_HEIGHT
+    };
+  }
+
+  function rectsIntersect(first, second) {
+    return first.x < second.x + second.width &&
+      second.x < first.x + first.width &&
+      first.y < second.y + second.height &&
+      second.y < first.y + first.height;
+  }
+
+  function normalizedBox(first, second) {
+    return {
+      x: Math.min(first.x, second.x),
+      y: Math.min(first.y, second.y),
+      width: Math.abs(first.x - second.x),
+      height: Math.abs(first.y - second.y)
+    };
+  }
+
+  // Класс .selected навешивается на уже отрисованные элементы: так не
+  // перерисовывается весь холст и сохраняются фокус/прокрутка. Призрак при
+  // перетаскивании несёт тот же id, что и оригинал — пропускаем его.
+  function updateSelectionClasses() {
+    selectedModuleIds.forEach((id) => {
+      if (!moduleById(id)) selectedModuleIds.delete(id);
+    });
+    if (!dom.moduleLayer) return;
+    dom.moduleLayer.querySelectorAll('[data-module-id]').forEach((element) => {
+      if (element.classList.contains('module--ghost')) return;
+      element.classList.toggle(
+        'selected',
+        selectedModuleIds.has(element.getAttribute('data-module-id'))
+      );
+    });
+  }
+
+  function clearSelection() {
+    if (selectedModuleIds.size === 0) return;
+    selectedModuleIds.clear();
+    updateSelectionClasses();
+  }
+
+  // Обычный клик выбирает только модуль; Shift+клик переключает его
+  // принадлежность текущему выделению.
+  function toggleModuleSelection(moduleId, additive) {
+    if (!moduleById(moduleId)) return;
+    if (additive) {
+      if (selectedModuleIds.has(moduleId)) selectedModuleIds.delete(moduleId);
+      else selectedModuleIds.add(moduleId);
+    } else {
+      selectedModuleIds.clear();
+      selectedModuleIds.add(moduleId);
+    }
+    selectedConnectionId = null;
+    cancelWireSelection();
+    updateSelectionClasses();
+  }
+
+  function hideSelectionBox() {
+    if (dom.selectionBox) dom.selectionBox.style.display = 'none';
+  }
+
+  function drawSelectionBox(box) {
+    if (!dom.selectionBox) return;
+    dom.selectionBox.setAttribute('x', viewNumber(box.x));
+    dom.selectionBox.setAttribute('y', viewNumber(box.y));
+    dom.selectionBox.setAttribute('width', viewNumber(box.width));
+    dom.selectionBox.setAttribute('height', viewNumber(box.height));
+    dom.selectionBox.style.display = '';
+  }
+
+  function cancelSelectionBox() {
+    if (!selectionBoxState) return;
+    selectionBoxState = null;
+    hideSelectionBox();
+  }
+
+  // Рамка стартует только на фоне: не на модуле, проводе, порту, кнопке
+  // и не при зажатом Пробеле/средней кнопке (панорамирование).
+  function isSelectionBackground(target) {
+    if (!(target instanceof Element)) return false;
+    return !target.closest([
+      '[data-module-id]', '[data-wire-id]', '[data-connection-id]', '[data-port-id]',
+      '[data-delete-module]', '[data-delete-wire]', '[data-delete-rail]',
+      '[data-rail-capacity]', '[data-toggle-module]', '[data-toggle-source]',
+      'button', 'a', 'input', '[role="button"]', '[role="switch"]'
+    ].join(', '));
+  }
+
+  function onSelectionMouseDown(event) {
+    if (event.button !== 0 || spaceHeld || panState || gesture || dragState) return;
+    if (selectionBoxState || editing) return;
+    if (!isSelectionBackground(event.target)) return;
+    const start = getSVGCoords(event);
+    if (!start || !Number.isFinite(start.x) || !Number.isFinite(start.y)) return;
+    event.preventDefault();
+    selectionBoxState = {
+      startX: start.x,
+      startY: start.y,
+      endX: start.x,
+      endY: start.y,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      moved: false,
+      shiftKey: event.shiftKey
+    };
+  }
+
+  function onSelectionMouseMove(event) {
+    if (!selectionBoxState) return;
+    const distance = Math.hypot(
+      event.clientX - selectionBoxState.clientX,
+      event.clientY - selectionBoxState.clientY
+    );
+    if (!selectionBoxState.moved && distance < 4) return;
+    const point = getSVGCoords(event);
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+    selectionBoxState.moved = true;
+    selectionBoxState.endX = point.x;
+    selectionBoxState.endY = point.y;
+    drawSelectionBox(normalizedBox(
+      { x: selectionBoxState.startX, y: selectionBoxState.startY },
+      { x: selectionBoxState.endX, y: selectionBoxState.endY }
+    ));
+  }
+
+  function onSelectionMouseUp(event) {
+    if (!selectionBoxState) return;
+    const state = selectionBoxState;
+    selectionBoxState = null;
+    hideSelectionBox();
+    // Просто клик: рамку не показывали, выделение снимет onCanvasClick.
+    if (!state.moved) return;
+
+    const end = getSVGCoords(event) || { x: state.endX, y: state.endY };
+    const box = normalizedBox({ x: state.startX, y: state.startY }, end);
+    const additive = state.shiftKey || event.shiftKey;
+
+    const hits = new Set();
+    allModules().forEach((module) => {
+      const bounds = moduleBounds(module.id);
+      if (bounds && rectsIntersect(box, bounds)) hits.add(module.id);
+    });
+    if (!additive) selectedModuleIds.clear();
+    hits.forEach((id) => selectedModuleIds.add(id));
+    selectedConnectionId = null;
+    cancelWireSelection();
+    updateSelectionClasses();
+
+    // Клик сразу после mouseup не должен сбросить только что сделанное выделение.
+    suppressCanvasClickUntil = performance.now() + 250;
   }
 
   function activateDrag(event) {
@@ -4502,6 +4868,7 @@
 
   function onWindowBlur() {
     endPan();
+    cancelSelectionBox();
     spaceHeld = false;
     dom.svgWrap.classList.remove('is-space-ready');
     if (gesture || dragState) cancelActiveInteraction();
@@ -4625,6 +4992,7 @@
 
   function selectConnection(connectionId) {
     if (!project.connections.some((connection) => connection.id === connectionId)) return;
+    clearSelection();
     selectedConnectionId = connectionId;
     renderAll();
   }
@@ -4692,6 +5060,53 @@
     }
   }
 
+  // Групповое удаление: все выделенные модули и все провода, к ним
+  // подключённые. Одна запись в истории и одно сохранение на всю операцию.
+  function deleteSelectedModules() {
+    if (selectedModuleIds.size === 0) return;
+    const ids = new Set(selectedModuleIds);
+    const modules = allModules().filter((module) => ids.has(module.id));
+    selectedModuleIds.clear();
+    if (modules.length === 0) {
+      updateSelectionClasses();
+      return;
+    }
+
+    const removedConnections = project.connections.filter((connection) =>
+      ids.has(connection.fromModuleId) || ids.has(connection.toModuleId)
+    );
+    const removedConnectionIds = new Set(removedConnections.map((connection) => connection.id));
+
+    project.rails.forEach((rail) => {
+      rail.modules = rail.modules.filter((module) => !ids.has(module.id));
+    });
+    project.connections = project.connections.filter(
+      (connection) => !removedConnectionIds.has(connection.id)
+    );
+
+    if ((activePort && ids.has(activePort.moduleId)) ||
+        (pendingWire && ids.has(pendingWire.moduleId))) {
+      clearConnectionDraft();
+    }
+    selectedConnectionId = null;
+    cancelWireSelection();
+    normalizeSlots();
+    persistProject();
+    commitHistory();
+    renderAll();
+
+    const parts = [`Модулей удалено: ${modules.length}`];
+    if (removedConnections.length) {
+      parts.push(`проводов удалено: ${removedConnections.length}`);
+    }
+    showToast(parts.join(', '), 'success', 2800);
+  }
+
+  function deleteSelected() {
+    if (selectedModuleIds.size) deleteSelectedModules();
+    else if (selectedConnectionId) removeConnection(selectedConnectionId);
+  }
+
   function toggleModule(moduleId) {
     const location = railOfModule(moduleId);
     if (!location || !moduleHasSwitch(location.module)) return;
@@ -4731,6 +5146,19 @@
     project.simulation = Boolean(dom.simulationToggle?.checked);
     persistProject();
     syncSimulationToggle();
+    renderAll();
+  }
+
+  function syncParamsToggle() {
+    const enabled = isShowingParams();
+    if (dom.paramsToggle) dom.paramsToggle.checked = enabled;
+    if (dom.paramsState) dom.paramsState.textContent = enabled ? 'Вкл' : 'Выкл';
+  }
+
+  function onParamsToggleChange() {
+    project.showParams = Boolean(dom.paramsToggle?.checked);
+    persistProject();
+    syncParamsToggle();
     renderAll();
   }
 
@@ -4824,9 +5252,14 @@
       return;
     }
 
-    if (event.target.closest('[data-module-id]')) return;
+    const moduleElement = event.target.closest('[data-module-id]');
+    if (moduleElement) {
+      toggleModuleSelection(moduleElement.getAttribute('data-module-id'), event.shiftKey);
+      return;
+    }
 
-    // Клик по пустому месту снимает выделение провода и отменяет выбор порта.
+    // Клик по пустому месту снимает выделение модулей/провода и выбор порта.
+    clearSelection();
     cancelWireSelection();
     selectedConnectionId = null;
     if (activePort || pendingWire) clearConnectionDraft();
@@ -4858,17 +5291,21 @@
     if (!editing || !dom.inlineEditor) return;
     const { kind, id } = editing;
     const isModule = kind === 'module';
-    const field = isModule ? 'description' : 'label';
-    const maxLength = isModule
-      ? MAX_MODULE_DESCRIPTION_LENGTH
-      : MAX_WIRE_LABEL_LENGTH;
-    const value = safeText(dom.inlineEditor.value, '', maxLength);
+    const isPower = kind === 'loadPower';
+    const field = isPower ? 'power' : (isModule ? 'description' : 'label');
+    const value = isPower
+      ? normalizeLoadPower(dom.inlineEditor.value, DEFAULT_LOAD_POWER)
+      : safeText(
+          dom.inlineEditor.value,
+          '',
+          isModule ? MAX_MODULE_DESCRIPTION_LENGTH : MAX_WIRE_LABEL_LENGTH
+        );
     closeInlineEditor();
 
-    const item = isModule
+    const item = (isModule || isPower)
       ? moduleById(id)
       : project.connections.find((connection) => connection.id === id);
-    if (!item || (item[field] || '') === value) return;
+    if (!item || item[field] === value) return;
     item[field] = value;
     persistProject();
     commitHistory();
@@ -4901,7 +5338,8 @@
   function openInlineEditor(kind, id, anchor) {
     if (!dom.inlineEditor || !anchor) return;
     const isModule = kind === 'module';
-    const item = isModule
+    const isPower = kind === 'loadPower';
+    const item = (isModule || isPower)
       ? moduleById(id)
       : project.connections.find((connection) => connection.id === id);
     if (!item) return;
@@ -4914,22 +5352,37 @@
     commitInlineEdit();
     clearConnectionDraft();
 
-    const field = isModule ? 'description' : 'label';
+    const field = isPower ? 'power' : (isModule ? 'description' : 'label');
     editing = { kind, id, anchorRect };
     // Глобальная привязка поля к редактируемому элементу.
     currentEditingId = id;
     currentEditingType = kind;
     const editor = dom.inlineEditor;
-    const context = isModule ? 'Описание модуля' : 'Маркировка провода';
-    editor.maxLength = isModule
-      ? MAX_MODULE_DESCRIPTION_LENGTH
-      : MAX_WIRE_LABEL_LENGTH;
-    editor.value = item[field] || '';
+    const context = isPower ? 'Мощность нагрузки, Вт' : (isModule ? 'Описание модуля' : 'Маркировка провода');
+    editor.type = isPower ? 'number' : 'text';
+    if (isPower) {
+      editor.min = String(MIN_LOAD_POWER);
+      editor.max = String(MAX_LOAD_POWER);
+      editor.step = '1';
+      editor.removeAttribute('maxlength');
+    } else {
+      editor.removeAttribute('min');
+      editor.removeAttribute('max');
+      editor.removeAttribute('step');
+      editor.maxLength = isModule
+        ? MAX_MODULE_DESCRIPTION_LENGTH
+        : MAX_WIRE_LABEL_LENGTH;
+    }
+    editor.value = isPower
+      ? String(normalizeLoadPower(item.power, DEFAULT_LOAD_POWER))
+      : (item[field] || '');
     editor.title = `${context} · Enter — сохранить, Esc — отмена`;
     editor.setAttribute('aria-label', context);
-    editor.placeholder = isModule
-      ? 'Например: Розетки в туалете · Enter — сохранить'
-      : 'Например: Свет в комнате · Enter — сохранить';
+    editor.placeholder = isPower
+      ? `Например: 2000 · I = P / ${NOMINAL_VOLTAGE} · Enter — сохранить`
+      : (isModule
+          ? 'Например: Розетки в туалете · Enter — сохранить'
+          : 'Например: Свет в комнате · Enter — сохранить');
     editor.hidden = false;
     placeOverlay(editor, editing.anchorRect, 10);
     editor.focus({ preventScroll: true });
@@ -4967,8 +5420,9 @@
     if (!moduleId || moduleId === POWER_SOURCE.id) return;
     event.preventDefault();
     event.stopPropagation();
+    const module = moduleById(moduleId);
     cancelModuleToggle();
-    openInlineEditor('module', moduleId, moduleElement);
+    openInlineEditor(isLoadModule(module) ? 'loadPower' : 'module', moduleId, moduleElement);
   }
 
   function onCanvasDblClick(event) {
@@ -5097,6 +5551,10 @@
 
     if (event.key === 'Escape') {
       if (event.target.closest?.('dialog')) return;
+      if (selectionBoxState) {
+        cancelSelectionBox();
+        return;
+      }
       if (dragState || gesture) {
         cancelActiveInteraction();
         return;
@@ -5114,10 +5572,10 @@
     }
 
     if (event.key === 'Delete' || event.key === 'Backspace') {
-      if (!selectedConnectionId) return;
+      if (!selectedModuleIds.size && !selectedConnectionId) return;
       if (event.target.matches?.('input, textarea, [contenteditable="true"]')) return;
       event.preventDefault();
-      removeConnection(selectedConnectionId);
+      deleteSelected();
     }
   }
 
@@ -5142,6 +5600,7 @@
     project.connections = [];
     project.source = { isOn: true };
     clearConnectionDraft();
+    clearSelection();
     selectedConnectionId = null;
     resetInteractionState();
     persistProject();
@@ -5197,6 +5656,104 @@
     return cleaned.slice(0, 60) || 'panel';
   }
 
+  /* ------------------------ Project file (JSON) ----------------------- */
+
+  // Экспорт: собираем всё актуальное состояние (рейки, модули, провода,
+  // настройки) в один объект вместе с версией схемы и скачиваем как JSON.
+  function exportProject() {
+    const data = {
+      schemaVersion: SCHEMA_VERSION,
+      project
+    };
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    downloadBlob(blob, 'panel-project.json');
+    showToast('Проект сохранён в файл panel-project.json', 'success', 3000);
+  }
+
+  // Импорт: программно открываем системный диалог выбора файла.
+  function openImportFileDialog() {
+    if (!dom.importFile) return;
+    dom.importFile.value = '';
+    dom.importFile.click();
+  }
+
+  // Полная замена состояния загруженным (уже провалидированным) проектом.
+  function applyImportedProject(rawProject) {
+    const normalized = normalizeProject(rawProject);
+    if (!normalized) return false;
+
+    // Закрываем все «висячие» взаимодействия со старой схемой.
+    closeInlineEditor();
+    resetInteractionState();
+    clearConnectionDraft();
+    clearSelection();
+    selectedConnectionId = null;
+
+    project = normalized;
+
+    dom.projectName.value = project.name;
+    syncSimulationToggle();
+    syncParamsToggle();
+    updateDocumentTitle();
+    persistProject();
+    // История отмены тоже должна начинаться с загруженного состояния.
+    resetHistory();
+
+    // Возвращаем исходный вид: 100% масштаб без панорамирования.
+    viewState.x = 0;
+    viewState.y = 0;
+    viewState.zoom = 1;
+    applyView();
+
+    renderAll();
+    return true;
+  }
+
+  // Чтение выбранного файла: FileReader -> JSON.parse -> валидация ->
+  // замена состояния. Независимо от исхода поле ввода очищается, чтобы
+  // пользователь мог повторно выбрать тот же самый файл.
+  function onImportFileChange(event) {
+    const input = event.target;
+    const file = input.files && input.files[0];
+    const resetInput = () => { input.value = ''; };
+
+    if (!file) {
+      resetInput();
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      let ok = false;
+      try {
+        const parsed = JSON.parse(String(reader.result || ''));
+        // Поддерживаем как наш формат { schemaVersion, project }, так и
+        // «голый» объект проекта — главное, чтобы был массив rails.
+        const candidate = parsed && typeof parsed === 'object' && parsed.project
+          ? parsed.project
+          : parsed;
+        if (candidate && typeof candidate === 'object' &&
+            !Array.isArray(candidate) && Array.isArray(candidate.rails)) {
+          ok = applyImportedProject(candidate);
+        }
+      } catch (error) {
+        ok = false;
+      }
+      resetInput();
+      if (ok) {
+        showToast('Проект загружен', 'success', 3000);
+      } else {
+        showToast('Неверный формат файла', 'error', 3500);
+      }
+    };
+    reader.onerror = () => {
+      resetInput();
+      showToast('Неверный формат файла', 'error', 3500);
+    };
+    reader.readAsText(file, 'utf-8');
+  }
+
   /* ------------------------------- CSV -------------------------------- */
 
   function csvCell(value) {
@@ -5211,9 +5768,11 @@
     }
 
     const rows = [
-      ['Название модуля', 'Тег', 'Количество', 'Статус', 'Описание'],
+      ['Название модуля', 'Бренд', 'Артикул', 'Тег', 'Количество', 'Статус', 'Описание'],
       ...specification.map((item) => [
         item.name,
+        item.brand,
+        item.sku,
         item.tags.join(', '),
         item.count,
         specificationStatusLabel(item),
@@ -5297,22 +5856,67 @@
     });
   }
 
-  function exportCanvasSize() {
-    // Экспорт всегда содержит всю схему, а не текущую область viewBox.
-    return baseCanvasSize();
+  // Реальный габарит схемы в координатах viewBox. Пластина холста задаёт
+  // минимальную область, но провода, подписи и бейджи могут выходить за неё
+  // (например, нижние ряды проводов под последней рейкой). Объединяем bbox
+  // всех видимых элементов с пластиной — так PNG всегда содержит всю схему,
+  // а не только текущую область просмотра.
+  function exportBounds(width, height) {
+    const area = { left: 0, top: 0, right: width, bottom: height };
+    const layers = [dom.railLayer, dom.sourceLayer, dom.wireLayer, dom.moduleLayer];
+    // Служебные элементы интерфейса в картинку не попадают и в габарите не участвуют.
+    const uiSelector = [
+      '[data-delete-module]',
+      '[data-delete-wire]',
+      '[data-delete-rail]',
+      '[data-rail-capacity]',
+      '.rail-cap-control',
+      '.wire-halo',
+      '.module-focus-ring',
+      '.module-pending-badge',
+      '.rail-overflow-outline',
+      '.rail-slot-highlight'
+    ].join(', ');
+
+    for (const layer of layers) {
+      if (!layer) continue;
+      for (const element of layer.children) {
+        if (element.matches?.(uiSelector)) continue;
+        let box;
+        try {
+          box = element.getBBox();
+        } catch {
+          continue;
+        }
+        if (!box || ![box.x, box.y, box.width, box.height].every(Number.isFinite)) continue;
+        if (box.width <= 0 || box.height <= 0) continue;
+        area.left = Math.min(area.left, box.x);
+        area.top = Math.min(area.top, box.y);
+        area.right = Math.max(area.right, box.x + box.width);
+        area.bottom = Math.max(area.bottom, box.y + box.height);
+      }
+    }
+
+    const x = Math.floor(area.left - EXPORT_BBOX_MARGIN);
+    const y = Math.floor(area.top - EXPORT_BBOX_MARGIN);
+    const right = Math.ceil(area.right + EXPORT_BBOX_MARGIN);
+    const bottom = Math.ceil(area.bottom + EXPORT_BBOX_MARGIN);
+    return { x, y, width: Math.max(1, right - x), height: Math.max(1, bottom - y) };
   }
 
   function stabilizeCanvasForExport() {
-    if (!dragState && !gesture && !activePort && !pendingWire && !selectedConnectionId) return;
+    if (!dragState && !gesture && !activePort && !pendingWire &&
+        !selectedConnectionId && selectedModuleIds.size === 0) return;
 
     resetInteractionState();
     clearConnectionDraft();
+    clearSelection();
     selectedConnectionId = null;
     renderCanvas();
     updateConnectionUI();
   }
 
-  function serializeCanvasForExport(width, height) {
+  function serializeCanvasForExport(bounds) {
     const source = dom.canvas;
     const clone = source.cloneNode(true);
 
@@ -5320,10 +5924,10 @@
     inlineComputedStyles(source, clone);
 
     clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-    clone.setAttribute('width', String(width));
-    clone.setAttribute('height', String(height));
-    // Сбрасываем масштаб/панораму: PNG должен показывать всю схему.
-    clone.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    clone.setAttribute('width', String(bounds.width));
+    clone.setAttribute('height', String(bounds.height));
+    // Сбрасываем масштаб/панораму и задаём viewBox по габариту всех элементов.
+    clone.setAttribute('viewBox', `${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}`);
 
     // Убираем элементы интерфейса, которые не являются частью схемы:
     // превью провода, порты, кнопки удаления, хало и индикаторы выделения.
@@ -5339,7 +5943,8 @@
       '.wire-halo',
       '.module-focus-ring',
       '.module-pending-badge',
-      '.rail-overflow-outline'
+      '.rail-overflow-outline',
+      '.rail-slot-highlight'
     ].join(', ')).forEach((element) => element.remove());
 
     return new XMLSerializer().serializeToString(clone);
@@ -5347,13 +5952,15 @@
 
   function exportPng() {
     let markup;
+    let bounds;
     let width;
     let height;
 
     try {
       stabilizeCanvasForExport();
-      ({ width, height } = exportCanvasSize());
-      markup = serializeCanvasForExport(width, height);
+      ({ width, height } = baseCanvasSize());
+      bounds = exportBounds(width, height);
+      markup = serializeCanvasForExport(bounds);
     } catch (error) {
       console.error('PNG export preparation failed:', error);
       showToast('Не удалось подготовить изображение холста.', 'error', 3500);
@@ -5369,8 +5976,8 @@
       URL.revokeObjectURL(svgUrl);
       try {
         const canvas = document.createElement('canvas');
-        const imageWidth = Math.ceil(width + EXPORT_PADDING * 2);
-        const imageHeight = Math.ceil(height + EXPORT_PADDING * 2);
+        const imageWidth = Math.ceil(bounds.width + EXPORT_PADDING * 2);
+        const imageHeight = Math.ceil(bounds.height + EXPORT_PADDING * 2);
 
         canvas.width = Math.round(imageWidth * EXPORT_SCALE);
         canvas.height = Math.round(imageHeight * EXPORT_SCALE);
@@ -5386,7 +5993,7 @@
         context.scale(EXPORT_SCALE, EXPORT_SCALE);
         context.fillStyle = background;
         context.fillRect(0, 0, imageWidth, imageHeight);
-        context.drawImage(image, EXPORT_PADDING, EXPORT_PADDING, width, height);
+        context.drawImage(image, EXPORT_PADDING, EXPORT_PADDING, bounds.width, bounds.height);
 
         const save = (blob) => {
           if (!blob) {
@@ -5499,6 +6106,9 @@
     if (dom.resetViewBtn) dom.resetViewBtn.addEventListener('click', resetView);
 
     dom.canvas.addEventListener('pointerdown', onCanvasPointerDown);
+    // Рамка выделения начинается только на фоне; mousedown (а не pointerdown)
+    // выбран намеренно: средняя кнопка/панорама уже перехватываются выше.
+    dom.canvas.addEventListener('mousedown', onSelectionMouseDown);
     dom.canvas.addEventListener('click', onCanvasClick);
     // Подпись провода открывается двойным кликом именно по хало:
     // видимый .wire-path имеет pointer-events: none и событие не ловит.
@@ -5524,6 +6134,8 @@
 
     dom.portLayer.addEventListener('pointerover', onPortPointerOver);
     dom.portLayer.addEventListener('pointerout', onPortPointerOut);
+    dom.canvas.addEventListener('pointerover', onElementPointerOver);
+    dom.canvas.addEventListener('pointerout', onElementPointerOut);
 
     dom.wireTypePopover.addEventListener('click', onWireTypeOptionClick);
     dom.wireTypeCancel.addEventListener('click', () => {
@@ -5546,8 +6158,13 @@
     // Панорамирование колесиком живёт на mouse-событиях window: жест корректно
     // завершится, даже если курсор ушёл за пределы холста/окна.
     window.addEventListener('mousemove', onPanMouseMove, { passive: false });
+    window.addEventListener('mousemove', onSelectionMouseMove);
     window.addEventListener('mouseup', onPanMouseUp);
-    document.addEventListener('mouseleave', () => endPan());
+    window.addEventListener('mouseup', onSelectionMouseUp);
+    document.addEventListener('mouseleave', () => {
+      endPan();
+      cancelSelectionBox();
+    });
     window.addEventListener('blur', onWindowBlur);
     document.addEventListener('keydown', onGlobalKeyDown);
     document.addEventListener('keyup', onGlobalKeyUp);
@@ -5565,12 +6182,18 @@
     if (dom.simulationToggle) {
       dom.simulationToggle.addEventListener('change', onSimulationToggleChange);
     }
+    if (dom.paramsToggle) {
+      dom.paramsToggle.addEventListener('change', onParamsToggleChange);
+    }
     if (dom.addRail) dom.addRail.addEventListener('click', addRail);
     dom.undoBtn.addEventListener('click', undo);
     dom.redoBtn.addEventListener('click', redo);
     dom.exportCsv.addEventListener('click', exportCsv);
     dom.exportCsvSecondary.addEventListener('click', exportCsv);
     dom.exportPng.addEventListener('click', exportPng);
+    if (dom.downloadProject) dom.downloadProject.addEventListener('click', exportProject);
+    if (dom.importProject) dom.importProject.addEventListener('click', openImportFileDialog);
+    if (dom.importFile) dom.importFile.addEventListener('change', onImportFileChange);
     dom.clearProject.addEventListener('click', openClearDialog);
     dom.clearDialog.addEventListener('close', onClearDialogClose);
   }
@@ -5588,6 +6211,7 @@
     dom.projectName.value = project.name;
     updateDocumentTitle();
     syncSimulationToggle();
+    syncParamsToggle();
     renderAll();
 
     // Баннер миграции показывается один раз: обновлённый проект уже записан в localStorage.
