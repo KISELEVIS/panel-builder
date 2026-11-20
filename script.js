@@ -45,6 +45,13 @@
   const VIEW_ZOOM_STEP = 1.25;
   const MODULE_UNIT = 48;
   const MODULE_HEIGHT = 160;
+  // Реальная ширина одного модуля DIN-рейки — 18 мм. Отсюда масштаб схемы:
+  // 48 px = 0.018 м, то есть ~2666.7 px на метр. Длины считаются в
+  // координатах viewBox, поэтому зум и панорамирование на них не влияют.
+  const MODULE_REAL_WIDTH_METERS = 0.018;
+  const PIXELS_PER_METER = MODULE_UNIT / MODULE_REAL_WIDTH_METERS;
+  // Технологический запас на изгибы, укладку и разделку концов провода.
+  const WIRE_LENGTH_RESERVE = 1.25;
   // Отступы вокруг холста и коэффициент чёткости для PNG-экспорта.
   const EXPORT_PADDING = 24;
   const EXPORT_SCALE = 2;
@@ -364,6 +371,12 @@
     specWireL3: document.getElementById('spec-wire-l3'),
     specWireN: document.getElementById('spec-wire-n'),
     specWirePE: document.getElementById('spec-wire-pe'),
+    specCable: document.getElementById('spec-cable'),
+    specCableL1: document.getElementById('spec-cable-l1'),
+    specCableL2: document.getElementById('spec-cable-l2'),
+    specCableL3: document.getElementById('spec-cable-l3'),
+    specCableN: document.getElementById('spec-cable-n'),
+    specCablePE: document.getElementById('spec-cable-pe'),
     connectionsCount: document.getElementById('connections-count'),
     connectionList: document.getElementById('connection-list'),
     clearDialog: document.getElementById('clear-dialog'),
@@ -1395,6 +1408,55 @@
       if (WIRE_TYPES[connection.type]) counts[connection.type] += 1;
     }
     return counts;
+  }
+
+  // Длина одной SVG-полилинии в пикселях схемы: сумма длин всех сегментов.
+  function polylineLengthPx(polyline) {
+    if (!polyline) return 0;
+    const points = polyline.points;
+    if (!points || points.numberOfItems < 2) return 0;
+
+    let total = 0;
+    for (let index = 1; index < points.numberOfItems; index += 1) {
+      const previous = points.getItem(index - 1);
+      const current = points.getItem(index);
+      total += Math.sqrt(
+        Math.pow(current.x - previous.x, 2) + Math.pow(current.y - previous.y, 2)
+      );
+    }
+    return total;
+  }
+
+  // Расход кабеля по типам. Для каждого провода берём фактическую полилинию
+  // с холста (она уже в координатах viewBox), переводим пиксели в метры по
+  // масштабу DIN-модуля и добавляем технологический запас. Округление —
+  // до 0.1 м, как принято в спецификации.
+  function calculateWireLengths() {
+    const pixels = {};
+    for (const key of WIRE_TYPE_KEYS) pixels[key] = 0;
+
+    const polylines = new Map();
+    if (dom.wireLayer) {
+      dom.wireLayer.querySelectorAll('polyline[data-connection-id]').forEach((polyline) => {
+        polylines.set(polyline.getAttribute('data-connection-id'), polyline);
+      });
+    }
+
+    for (const connection of project.connections) {
+      const typeKey = WIRE_TYPES[connection.type] ? connection.type : DEFAULT_WIRE_TYPE;
+      pixels[typeKey] += polylineLengthPx(polylines.get(connection.id));
+    }
+
+    const lengths = {};
+    for (const key of WIRE_TYPE_KEYS) {
+      const meters = (pixels[key] / PIXELS_PER_METER) * WIRE_LENGTH_RESERVE;
+      lengths[key] = Math.round(meters * 10) / 10;
+    }
+    return lengths;
+  }
+
+  function formatCableLength(meters) {
+    return `${meters.toFixed(1)} м`;
   }
 
   function updateDocumentTitle() {
@@ -4128,6 +4190,16 @@
     dom.specWireL3.textContent = String(wireCounts.L3);
     dom.specWireN.textContent = String(wireCounts.N);
     dom.specWirePE.textContent = String(wireCounts.PE);
+
+    // Расход кабеля пересчитывается при каждом renderAll(): добавление и
+    // удаление провода, перенос модуля, смена рейки и т.д.
+    const wireLengths = calculateWireLengths();
+    if (dom.specCable) dom.specCable.hidden = project.connections.length === 0;
+    if (dom.specCableL1) dom.specCableL1.textContent = formatCableLength(wireLengths.L1);
+    if (dom.specCableL2) dom.specCableL2.textContent = formatCableLength(wireLengths.L2);
+    if (dom.specCableL3) dom.specCableL3.textContent = formatCableLength(wireLengths.L3);
+    if (dom.specCableN) dom.specCableN.textContent = formatCableLength(wireLengths.N);
+    if (dom.specCablePE) dom.specCablePE.textContent = formatCableLength(wireLengths.PE);
   }
 
   function renderConnections() {
@@ -5801,6 +5873,18 @@
       for (const key of WIRE_TYPE_KEYS) {
         rows.push([WIRE_TYPES[key].label, wireCounts[key]]);
       }
+    }
+
+    // Расход кабеля по типам — в конце файла, вместе с параметрами расчёта.
+    const wireLengths = calculateWireLengths();
+    const reservePercent = Math.round((WIRE_LENGTH_RESERVE - 1) * 100);
+    rows.push([]);
+    rows.push(['Расход кабеля']);
+    rows.push([`Длина с запасом ${reservePercent}% на изгибы и разделку`]);
+    rows.push([`Масштаб: 1 модуль DIN = 18 мм (${MODULE_UNIT} px)`]);
+    rows.push(['Тип', 'Длина, м']);
+    for (const key of WIRE_TYPE_KEYS) {
+      rows.push([`Кабель ${WIRE_TYPES[key].label}`, wireLengths[key].toFixed(1)]);
     }
 
     const csv = '\uFEFF' + rows.map((row) => row.map(csvCell).join(',')).join('\r\n');
