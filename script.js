@@ -23,6 +23,34 @@
   // v6: добавлены мощность нагрузки (power) и отображение параметров сети
   // (showParams: напряжение / ток / мощность).
   const SCHEMA_VERSION = 6;
+  // Ровно три переключаемых слоя холста. Порядок массива совпадает с порядком
+  // групп <g> в SVG (сверху вниз по DOM): провода → модули → подписи. Именно
+  // он задаёт z-index на холсте. Порты НЕ являются слоем: они рендерятся
+  // внутри модулей (#layer-modules) в локальных координатах модуля и потому
+  // гарантированно исчезают вместе с ним. Порты источника живут в его группе.
+  const LAYER_KEYS = ['wires', 'modules', 'labels'];
+  const LAYER_ELEMENT_IDS = {
+    wires: 'layer-wires',
+    modules: 'layer-modules',
+    labels: 'layer-labels'
+  };
+  const LAYER_NAMES = {
+    wires: 'Провода',
+    modules: 'Модули',
+    labels: 'Подписи'
+  };
+  // Соответствие ключа слоя полю в dom — используется при создании структур.
+  const LAYER_DOM_FIELDS = {
+    wires: 'wireLayer',
+    modules: 'moduleLayer',
+    labels: 'labelLayer'
+  };
+  // Непереключаемые группы: фон DIN-реек и закреплённый источник питания.
+  // У них нет тумблеров в панели «Слои», они не получают классы .hidden/.locked
+  // и потому всегда видны, независимо от состояния слоёв модулей и проводов.
+  const STATIC_GROUP_IDS = Object.freeze(['rail-track', 'layer-power-source']);
+  const STATIC_GROUP_LAYER_ID = 'layer-power-source';
+  const STATIC_GROUP_RAIL_ID = 'rail-track';
   // Номинальное фазное напряжение и пределы мощности нагрузки.
   const NOMINAL_VOLTAGE = 230;
   const DEFAULT_LOAD_POWER = 1000;
@@ -32,7 +60,13 @@
   const HISTORY_LIMIT = 50;
   // Пределы длины пользовательских подписей (описание модуля / маркировка провода).
   const MAX_MODULE_DESCRIPTION_LENGTH = 200;
+  // Название модуля сохраняется в проекте и попадает в спецификацию; лимит
+  // совпадает с normalizeModules(), иначе длинное имя обрезалось бы при загрузке.
+  const MAX_MODULE_NAME_LENGTH = 40;
   const MAX_WIRE_LABEL_LENGTH = 80;
+  // Примечание в кабельном журнале: то же поле connection.label, что и подпись
+  // провода на схеме. 50 символов достаточно и не ломают ширину колонки.
+  const MAX_JOURNAL_NOTE_LENGTH = 50;
 
   const SVG_WIDTH = 1016;
   const SVG_BASE_HEIGHT = 520;
@@ -52,6 +86,28 @@
   const PIXELS_PER_METER = MODULE_UNIT / MODULE_REAL_WIDTH_METERS;
   // Технологический запас на изгибы, укладку и разделку концов провода.
   const WIRE_LENGTH_RESERVE = 1.25;
+  // Смета: цена одного метра проводника (L1, L2, L3, N, PE), руб/м.
+  const WIRE_PRICE_PER_METER = 50;
+  // Предел для введённой вручную цены: защищает от «случайного» Number.MAX_VALUE
+  // в localStorage и от некорректных чисел в импортированном JSON.
+  const MAX_CUSTOM_PRICE = 100000000;
+  // Резервные цены для старых элементов библиотеки, у которых в library.js
+  // нет поля price. Новые позиции всегда берут цену оттуда.
+  const DEFAULT_PRICE_BY_TYPE = Object.freeze({
+    breaker: 350,
+    rcbo: 1500,
+    rcd: 1200,
+    contactor: 850,
+    relay: 950,
+    timer: 1250,
+    'impulse-relay': 450,
+    'power-supply': 1550,
+    voltmeter: 680,
+    meter: 2100,
+    terminal: 60,
+    busbar: 300,
+    load: 0
+  });
   // Отступы вокруг холста и коэффициент чёткости для PNG-экспорта.
   const EXPORT_PADDING = 24;
   const EXPORT_SCALE = 2;
@@ -238,6 +294,8 @@
       ? raw.busType
       : (raw.busbarType === 'N' || raw.busbarType === 'PE' ? raw.busbarType : null);
     const type = text(raw.type, 'other', 24);
+    const priceValue = Number(raw.price);
+    const price = Number.isFinite(priceValue) && priceValue >= 0 ? priceValue : null;
 
     return {
       id,
@@ -259,6 +317,9 @@
       busbarType: busType,
       brand: text(raw.brand, '', 60),
       sku: text(raw.sku, '', 60),
+      // Цена из library.js. null = в базе не задана, тогда смета берёт
+      // резервное значение по типу модуля.
+      price,
       power: normalizeLoadPower(raw.power, DEFAULT_LOAD_POWER),
       description: text(raw.description, '', 600)
     };
@@ -314,12 +375,19 @@
     saveText: document.getElementById('save-text'),
     undoBtn: document.getElementById('undo-btn'),
     redoBtn: document.getElementById('redo-btn'),
+    // Склейка модулей.
+    groupBtn: document.getElementById('group-modules'),
+    ungroupBtn: document.getElementById('ungroup-modules'),
     exportCsv: document.getElementById('export-csv'),
     exportCsvSecondary: document.getElementById('export-csv-secondary'),
     exportPng: document.getElementById('export-png'),
     downloadProject: document.getElementById('download-project'),
+    exportDropdown: document.getElementById('export-dropdown'),
+    exportMenuBtn: document.getElementById('export-menu-btn'),
+    exportMenu: document.getElementById('export-menu'),
     importProject: document.getElementById('import-project'),
     importFile: document.getElementById('import-file'),
+    openJournal: document.getElementById('open-journal'),
     zoomInBtn: document.getElementById('zoom-in'),
     zoomOutBtn: document.getElementById('zoom-out'),
     zoomLevel: document.getElementById('zoom-level'),
@@ -335,12 +403,16 @@
     canvasSurface: document.getElementById('canvas-surface'),
     canvasGrid: document.getElementById('canvas-grid'),
     svgWrap: document.getElementById('svg-wrap'),
-    railLayer: document.getElementById('layer-rail'),
-    sourceLayer: document.getElementById('layer-source'),
+    // Статичные группы: рейки всегда видны, источник питания закреплён над
+    // первой рейкой и не входит ни в один переключаемый слой.
+    railTrack: document.getElementById(STATIC_GROUP_RAIL_ID),
+    powerSourceLayer: document.getElementById(STATIC_GROUP_LAYER_ID),
     wireLayer: document.getElementById('layer-wires'),
     moduleLayer: document.getElementById('layer-modules'),
-    portLayer: document.getElementById('layer-ports'),
-    previewLayer: document.getElementById('layer-preview'),
+    labelLayer: document.getElementById('layer-labels'),
+    layersPanel: document.getElementById('layers-panel'),
+    layersToggle: document.getElementById('layers-toggle'),
+    layersList: document.getElementById('layers-list'),
     selectionBox: document.getElementById('selection-box'),
     wireTypePopover: document.getElementById('wire-type-popover'),
     wireTypeCancel: document.getElementById('wire-type-cancel'),
@@ -381,12 +453,44 @@
     connectionList: document.getElementById('connection-list'),
     clearDialog: document.getElementById('clear-dialog'),
     inlineEditor: document.getElementById('inline-editor'),
-    toastRegion: document.getElementById('toast-region')
+    openEstimate: document.getElementById('open-estimate'),
+    estimateDialog: document.getElementById('estimate-dialog'),
+    estimateClose: document.getElementById('estimate-close'),
+    estimateCloseBottom: document.getElementById('estimate-close-bottom'),
+    estimateSubtitle: document.getElementById('estimate-subtitle'),
+    estimateBody: document.getElementById('estimate-body'),
+    estimateContent: document.getElementById('estimate-content'),
+    estimateDownloadCsv: document.getElementById('estimate-download-csv'),
+    estimatePrint: document.getElementById('estimate-print'),
+    estimatePrintSheet: document.getElementById('estimate-print-sheet'),
+    // Вкладки рабочей области и кабельный журнал.
+    viewTabs: document.getElementById('view-tabs'),
+    tabSchema: document.getElementById('tab-schema'),
+    tabJournal: document.getElementById('tab-journal'),
+    schemaView: document.getElementById('schema-view'),
+    journalView: document.getElementById('journal-view'),
+    journalSubtitle: document.getElementById('journal-subtitle'),
+    journalBody: document.getElementById('journal-body'),
+    journalFoot: document.getElementById('journal-foot'),
+    journalTotalCount: document.getElementById('journal-total-count'),
+    journalTotalLength: document.getElementById('journal-total-length'),
+    journalDownloadCsv: document.getElementById('journal-download-csv'),
+    journalPrint: document.getElementById('journal-print'),
+    journalPrintSheet: document.getElementById('journal-print-sheet'),
+    toastRegion: document.getElementById('toast-region'),
+    // Контекстное меню (ПКМ) — живёт на уровне body, position: fixed.
+    contextMenu: document.getElementById('context-menu'),
+    contextMenuHead: document.getElementById('context-menu-head'),
+    contextMenuItems: document.getElementById('context-menu-items')
   };
 
   /* ------------------------------ State ------------------------------- */
 
   let project = null;
+  // Активная вкладка рабочей области: 'schema' | 'journal'.
+  let activeTab = 'schema';
+  // Что печатать: по умолчанию кабельный журнал, кнопка сметы переключает на смету.
+  let printContext = 'journal';
   // Редактируемая подпись: { kind: 'module' | 'wire', id, anchorRect }.
   let editing = null;
   // Глобальная привязка открытого inline-поля к конкретному элементу холста.
@@ -400,6 +504,14 @@
   // Используется рендером для подсветки клемм шин.
   let livePorts = new Set();
   let selectedConnectionId = null;
+  // Контекстное меню ПКМ: { kind: 'module' | 'wire' | 'canvas', id, svgPoint }.
+  let contextMenuState = null;
+  // Последний модуль под ПКМ — запасной источник для Ctrl+C без выделения.
+  let lastContextModuleId = null;
+  // Буфер обмена модулями: { items: [{ data, groupId }] }. Провода не копируются.
+  let moduleClipboard = null;
+  // Последняя точка курсора над холстом в координатах схемы (площадка для Ctrl+V).
+  let lastPointerSvgPoint = null;
   // Идентификаторы модулей, выделенных рамкой / Shift+кликом.
   const selectedModuleIds = new Set();
   // Активный жест рамки: { startX, startY, clientX, clientY, moved, shiftKey }.
@@ -497,6 +609,38 @@
 
   function allModules() {
     return project.rails.reduce((modules, rail) => modules.concat(rail.modules), []);
+  }
+
+  /* ------------------ Склейка модулей (группы) ------------------------
+     groupId хранится прямо в объекте модуля, поэтому попадает и в JSON
+     экспорта, и в localStorage вместе со всем проектом. Формат жёстко
+     ограничен: только строки вида grp_… из makeId('grp'). */
+  function safeGroupId(value) {
+    if (typeof value !== 'string') return null;
+    const text = value.trim();
+    return /^grp_[A-Za-z0-9_-]{1,80}$/.test(text) ? text : null;
+  }
+
+  function selectedModules() {
+    return allModules().filter((module) => selectedModuleIds.has(module.id));
+  }
+
+  function modulesOfGroup(groupId) {
+    if (!groupId) return [];
+    return allModules().filter((module) => module.groupId === groupId);
+  }
+
+  // Удаление модуля из склейки разрывает группу: остатки просто перестают
+  // быть склеенными (как принято в большинстве редакторов).
+  function dissolveGroupsOf(modules) {
+    const groupIds = new Set();
+    modules.forEach((module) => {
+      if (module?.groupId) groupIds.add(module.groupId);
+    });
+    if (groupIds.size === 0) return;
+    allModules().forEach((module) => {
+      if (module.groupId && groupIds.has(module.groupId)) delete module.groupId;
+    });
   }
 
   function usedWidth(rail = null) {
@@ -639,11 +783,22 @@
     return null;
   }
 
-  function sourcePortPoint(index) {
+  // Локальная точка порта источника — внутри его группы с transform="translate".
+  // Один и тот же helper используется и для отрисовки кружка, и для расчёта
+  // абсолютной точки провода, поэтому порт физически не может «отпорваться».
+  function localSourcePortPoint(index) {
     const count = POWER_SOURCE.ports.length;
     return {
-      x: POWER_SOURCE.x + ((index + 1) * POWER_SOURCE.width) / (count + 1),
-      y: POWER_SOURCE.y + POWER_SOURCE.height
+      x: ((index + 1) * POWER_SOURCE.width) / (count + 1),
+      y: POWER_SOURCE.height
+    };
+  }
+
+  function sourcePortPoint(index) {
+    const point = localSourcePortPoint(index);
+    return {
+      x: POWER_SOURCE.x + point.x,
+      y: POWER_SOURCE.y + point.y
     };
   }
 
@@ -857,6 +1012,49 @@
     return safeText(librarySku, '', 60) || '';
   }
 
+  // Ключ кастомной цены — id элемента библиотеки (libraryId), по которому
+  // buildSpecification() группирует одинаковые модули в одну строку сметы.
+  // Для унаследованных модулей без libraryId ключом остаётся их название.
+  function priceKeyFor(module) {
+    return module?.libraryId || `name:${module?.name || ''}`;
+  }
+
+  // Цена берётся из library.js (поле price). Для устаревших позиций без цены
+  // используется резервное значение по типу, чтобы смета всегда была заполнена.
+  // Введённая пользователем цена (project.customPrices) имеет приоритет над
+  // базовой: она редактируется прямо в таблице сметы и сохраняется в проекте.
+  function modulePrice(module) {
+    const customPrices = project?.customPrices;
+    if (customPrices && typeof customPrices === 'object' && !Array.isArray(customPrices)) {
+      const key = priceKeyFor(module);
+      if (Object.prototype.hasOwnProperty.call(customPrices, key)) {
+        const custom = Number(customPrices[key]);
+        if (Number.isFinite(custom) && custom >= 0) return roundMoney(custom);
+      }
+    }
+
+    const libraryPrice = LIBRARY_BY_ID.get(module?.libraryId)?.price;
+    if (typeof libraryPrice === 'number' && Number.isFinite(libraryPrice) && libraryPrice >= 0) {
+      return libraryPrice;
+    }
+    const fallback = DEFAULT_PRICE_BY_TYPE[module?.type];
+    return Number.isFinite(fallback) ? fallback : 0;
+  }
+
+  // Цена за метр провода: кастомная из project.customCablePrices имеет
+  // приоритет над базовой WIRE_PRICE_PER_METER. Ключ — тип проводника
+  // (L1, L2, L3, N, PE), поэтому коллизий с ценами модулей нет: те лежат
+  // в отдельном объекте project.customPrices.
+  function wirePrice(type) {
+    const customPrices = project?.customCablePrices;
+    if (customPrices && typeof customPrices === 'object' && !Array.isArray(customPrices) &&
+        Object.prototype.hasOwnProperty.call(customPrices, type)) {
+      const custom = Number(customPrices[type]);
+      if (Number.isFinite(custom) && custom >= 0) return roundMoney(custom);
+    }
+    return WIRE_PRICE_PER_METER;
+  }
+
   function moduleHasSwitch(module) {
     return SWITCHABLE_MODULE_TYPES.has(module?.type);
   }
@@ -908,17 +1106,47 @@
     return lines.filter(Boolean);
   }
 
+  // Базовая линия пользовательского описания зависит от типа корпуса:
+  // у шин и нагрузки заводской текст занимает другие места.
+  function moduleDescriptionBaseline(module) {
+    if (!module || isLoadModule(module)) return null;
+    if (isBusbarModule(module)) {
+      const counts = portsForModule(module);
+      return counts.left > 0 || counts.right > 0
+        ? MODULE_HEIGHT - 48
+        : MODULE_HEIGHT - 34;
+    }
+    return MODULE_HEIGHT - 28;
+  }
+
+  // Цвет описания раньше наследовался от класса корпуса. Теперь текст живёт
+  // в слое подписей, поэтому нужный вариант цвета задаётся явно.
+  function moduleDescriptionColorClass(module) {
+    const counts = portsForModule(module);
+    const isSideBusbar = isBusbarModule(module) && (counts.left > 0 || counts.right > 0);
+    if (isBusbarModule(module) && !isSideBusbar) return ' module-description--busbar';
+    if (isSideBusbar || MODULE_BODY_VARIANTS[module.type] === 'dark') {
+      return ' module-description--dark';
+    }
+    return '';
+  }
+
   // Подпись модуля: одна строка, крупный жирный шрифт (12px в CSS), жёстко
   // центрированная в корпусе. Длинный текст обрезается многоточием — так он
   // никогда не вылезает за границы модуля, даже у 1P корпуса.
-  function moduleDescriptionMarkup(module, width, baselineY) {
+  // Координаты АБСОЛЮТНЫЕ (viewBox), потому что элемент уходит в #layer-labels,
+  // а не в сдвинутую группу модуля.
+  function moduleDescriptionMarkup(module, position, baselineY) {
     const text = typeof module?.description === 'string' ? module.description.trim() : '';
     if (!text || module.__ghost) return '';
+    const width = position.width;
     const available = Math.max(18, width - 10);
     // ~7.2 px на символ при 12px bold — консервативная оценка для кириллицы.
     const maxChars = Math.max(4, Math.floor(available / 7.2));
     const label = truncateLabel(text, maxChars);
-    return `<text class="module-description" x="${(width / 2).toFixed(1)}" y="${baselineY.toFixed(1)}" text-anchor="middle">${escapeHtml(label)}</text>`;
+    const x = position.x + width / 2;
+    const y = position.y + baselineY;
+    return `<text class="module-description${moduleDescriptionColorClass(module)}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle">${escapeHtml(label)}</text>`;
   }
 
   // Подложка ограничена 280 px, поэтому видимая подпись не может быть длиннее
@@ -1082,14 +1310,104 @@
     }
   }
 
-  // Визуальный порядок слоёв: провода должны лежать поверх корпусов,
-  // но под портами — так кабели остаются яркими и чёткими.
-  function promoteWireLayer() {
-    const { canvas, wireLayer, moduleLayer, portLayer } = dom;
-    if (!canvas || !wireLayer || !moduleLayer || !portLayer) return;
-    if (moduleLayer.nextElementSibling !== wireLayer) {
-      canvas.insertBefore(wireLayer, portLayer);
+  // Создаёт (или заново очищает) структуру холста: три переключаемых
+  // слоя + две всегда видимые группы. Вызывается один раз при старте:
+  // устаревшие группы (бывший #layer-rails, старый #layer-ports) удаляются,
+  // недостающие создаются, все пять выстраиваются в нужном порядке перед
+  // рамкой выделения. Порядок задаёт z-index: рейки → провода → модули →
+  // источник → подписи.
+  // Сами теги <g> при последующих перерисовках НЕ удаляются — очищается
+  // только их внутреннее содержимое. Статичные группы никогда не получают
+  // классы .hidden/.locked: их нельзя скрыть или заблокировать из панели.
+  function setupSvgLayerStructure() {
+    const { canvas, selectionBox } = dom;
+    if (!canvas) return;
+
+    const switchableIds = LAYER_KEYS.map((key) => LAYER_ELEMENT_IDS[key]);
+    canvas.querySelectorAll('g[id^="layer-"]').forEach((group) => {
+      const keep = switchableIds.includes(group.id) || STATIC_GROUP_IDS.includes(group.id);
+      if (!keep) group.remove();
+    });
+
+    const orderedIds = [
+      STATIC_GROUP_RAIL_ID,
+      LAYER_ELEMENT_IDS.wires,
+      LAYER_ELEMENT_IDS.modules,
+      STATIC_GROUP_LAYER_ID,
+      LAYER_ELEMENT_IDS.labels
+    ];
+
+    orderedIds.forEach((id) => {
+      let group = canvas.querySelector(`#${id}`);
+      if (!group) {
+        group = document.createElementNS(SVG_NS, 'g');
+        group.setAttribute('id', id);
+      }
+      const isSwitchable = switchableIds.includes(id);
+      group.classList.toggle('layer', isSwitchable);
+      // Состояния задаются только классами .hidden / .locked.
+      group.classList.remove('hidden', 'locked');
+      group.innerHTML = '';
+      if (selectionBox && selectionBox.parentNode === canvas) {
+        canvas.insertBefore(group, selectionBox);
+      } else {
+        canvas.appendChild(group);
+      }
+    });
+
+    dom.railTrack = canvas.querySelector(`#${STATIC_GROUP_RAIL_ID}`);
+    dom.powerSourceLayer = canvas.querySelector(`#${STATIC_GROUP_LAYER_ID}`);
+    for (const key of LAYER_KEYS) {
+      dom[LAYER_DOM_FIELDS[key]] = canvas.querySelector(`#${LAYER_ELEMENT_IDS[key]}`);
     }
+  }
+
+  // Применяет сохранённые состояния слоёв к DOM и к кнопкам панели.
+  function applyLayerSettings() {
+    const settings = (project && project.layerSettings) || createLayerSettings();
+    for (const key of LAYER_KEYS) {
+      const state = settings[key] || { visible: true, locked: false };
+      const element = document.getElementById(LAYER_ELEMENT_IDS[key]);
+      if (element) {
+        element.classList.toggle('hidden', !state.visible);
+        element.classList.toggle('locked', state.locked);
+      }
+      if (!dom.layersList) continue;
+      dom.layersList.querySelectorAll(`.layer-toggle[data-layer="${key}"]`).forEach((button) => {
+        const isVisibility = button.dataset.layerAction === 'visible';
+        const pressed = isVisibility ? state.visible : state.locked;
+        button.setAttribute('aria-pressed', String(pressed));
+        const verb = isVisibility
+          ? (state.visible ? 'Скрыть' : 'Показать')
+          : (state.locked ? 'Разблокировать' : 'Заблокировать');
+        const label = `${verb} слой ${LAYER_NAMES[key]}`;
+        button.setAttribute('aria-label', label);
+        button.title = label;
+      });
+    }
+  }
+
+  // Переключает видимость или блокировку слоя и сразу сохраняет проект.
+  function setLayerSetting(key, action) {
+    if (!project || !LAYER_KEYS.includes(key)) return;
+    if (!project.layerSettings) project.layerSettings = createLayerSettings();
+    const state = project.layerSettings[key] ||
+      (project.layerSettings[key] = { visible: true, locked: false });
+    if (action === 'visible') state.visible = !state.visible;
+    else if (action === 'lock') state.locked = !state.locked;
+    else return;
+    applyLayerSettings();
+    commitHistory();
+    persistProject();
+  }
+
+  function toggleLayersPanel(force) {
+    if (!dom.layersToggle || !dom.layersList) return;
+    const expanded = force === undefined
+      ? dom.layersToggle.getAttribute('aria-expanded') !== 'true'
+      : Boolean(force);
+    dom.layersToggle.setAttribute('aria-expanded', String(expanded));
+    dom.layersList.hidden = !expanded;
   }
 
   function portsForModule(module) {
@@ -1126,18 +1444,30 @@
     return SIDE_PORT_SIDES.includes(side);
   }
 
-  // Единая формула координат клеммы: используется и рендером портов, и
-  // расчётом точек для трассировки — чтобы клик и провод совпадали всегда.
-  function modulePortPoint(position, side, index, counts = portsForModule(position.module)) {
+  // Локальная точка клеммы относительно левого верхнего угла корпуса модуля.
+  // Именно эти cx/cy получают кружки портов внутри <g class="module">.
+  // Никаких координат нуля холста: x=0 — левая грань корпуса, y=0 — верхняя.
+  function localModulePortPoint(width, side, index, counts) {
     if (side === 'top' || side === 'bottom') {
       return {
-        x: position.x + ((index + 1) * position.width) / (counts[side] + 1),
-        y: side === 'top' ? position.y : position.y + MODULE_HEIGHT
+        x: ((index + 1) * width) / (counts[side] + 1),
+        y: side === 'top' ? 0 : MODULE_HEIGHT
       };
     }
     return {
-      x: side === 'left' ? position.x : position.x + position.width,
-      y: position.y + ((index + 1) * MODULE_HEIGHT) / (counts[side] + 1)
+      x: side === 'left' ? 0 : width,
+      y: ((index + 1) * MODULE_HEIGHT) / (counts[side] + 1)
+    };
+  }
+
+  // Абсолютная точка клеммы в координатах viewBox: локальная точка + сдвиг
+  // группы модуля. Одна формула для рендера порта и трассировки провода —
+  // клик по порту и конец полилинии совпадают при любом зуме и перетаскивании.
+  function modulePortPoint(position, side, index, counts = portsForModule(position.module)) {
+    const local = localModulePortPoint(position.width, side, index, counts);
+    return {
+      x: position.x + local.x,
+      y: position.y + local.y
     };
   }
 
@@ -1759,6 +2089,28 @@
     return { id: makeId('rail'), capacity: RAIL.capacity, modules };
   }
 
+  // Настройки слоёв: видимость и блокировка. Значения по умолчанию —
+  // все слои видны и разблокированы.
+  function createLayerSettings() {
+    const settings = {};
+    for (const key of LAYER_KEYS) settings[key] = { visible: true, locked: false };
+    return settings;
+  }
+
+  // Приводит сохранённые/импортированные настройки к валидному виду:
+  // неизвестные слои отбрасываются, отсутствующие получают значения по умолчанию.
+  function normalizeLayerSettings(raw) {
+    const settings = createLayerSettings();
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return settings;
+    for (const key of LAYER_KEYS) {
+      const value = raw[key];
+      if (!value || typeof value !== 'object') continue;
+      settings[key].visible = value.visible !== false;
+      settings[key].locked = value.locked === true;
+    }
+    return settings;
+  }
+
   function createEmptyProject(name = 'Новый щит') {
     return {
       id: makeId('prj'),
@@ -1768,6 +2120,13 @@
       source: { isOn: true },
       simulation: true,
       showParams: true,
+      // Видимость и блокировка переключаемых слоёв (Провода/Модули/Подписи).
+      // Рейки и источник питания — не слои и здесь не хранятся.
+      layerSettings: createLayerSettings(),
+      // Введённые вручную цены: { [id элемента библиотеки]: число }.
+      customPrices: {},
+      // Кастомные цены за метр кабеля: { L1: 65, N: 50, ... }.
+      customCablePrices: {},
       updatedAt: new Date().toISOString()
     };
   }
@@ -1878,6 +2237,34 @@
 
   /* -------------------------- Project validation ----------------------- */
 
+  // Кастомные цены приходят из localStorage или импортированного JSON.
+  // Оставляем только конечные неотрицательные числа с безопасной точностью.
+  function normalizeCustomPrices(raw) {
+    const result = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return result;
+    for (const [key, value] of Object.entries(raw)) {
+      if (typeof key !== 'string' || !key || key.length > 120) continue;
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > MAX_CUSTOM_PRICE) continue;
+      result[key] = roundMoney(parsed);
+    }
+    return result;
+  }
+
+  // Цены кабелей хранятся отдельно от цен модулей и ключуются типом
+  // проводника (L1, L2, L3, N, PE). Незнакомые типы из JSON отбрасываются.
+  function normalizeCustomCablePrices(raw) {
+    const result = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return result;
+    for (const key of WIRE_TYPE_KEYS) {
+      if (!Object.prototype.hasOwnProperty.call(raw, key)) continue;
+      const parsed = Number(raw[key]);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > MAX_CUSTOM_PRICE) continue;
+      result[key] = roundMoney(parsed);
+    }
+    return result;
+  }
+
   function normalizeProject(raw, options = {}) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
 
@@ -1929,6 +2316,9 @@
 
       for (const rawModule of source) {
         if (!rawModule || typeof rawModule !== 'object') continue;
+        // Источник питания — закреплённый элемент интерфейса, а не модуль.
+        // Старые сохранения могли держать его в рейках: в проект не берём.
+        if (rawModule.isPowerSource === true || rawModule.id === POWER_SOURCE.id) continue;
 
         const rawLibraryId = safeText(rawModule.libraryId, '', 40);
         const libraryItem = LIBRARY_BY_ID.get(rawLibraryId);
@@ -1994,7 +2384,9 @@
             rawModule.power !== undefined ? rawModule.power : libraryItem?.power,
             DEFAULT_LOAD_POWER
           ),
-          description: safeText(rawModule.description, '', MAX_MODULE_DESCRIPTION_LENGTH)
+          description: safeText(rawModule.description, '', MAX_MODULE_DESCRIPTION_LENGTH),
+          // groupId сохраняется при импорте и загрузке из localStorage.
+          groupId: safeGroupId(rawModule.groupId) || undefined
         };
         modules.push(module);
         normalizedModules.push(module);
@@ -2111,6 +2503,9 @@
       source: { isOn: raw.source?.isOn !== false },
       simulation: raw.simulation !== false,
       showParams: raw.showParams !== false,
+      layerSettings: normalizeLayerSettings(raw.layerSettings),
+      customPrices: normalizeCustomPrices(raw.customPrices),
+      customCablePrices: normalizeCustomCablePrices(raw.customCablePrices),
       updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : new Date().toISOString()
     };
   }
@@ -2223,7 +2618,8 @@
     return JSON.parse(JSON.stringify({
       rails: project.rails,
       connections: project.connections,
-      source: project.source || { isOn: true }
+      source: project.source || { isOn: true },
+      layerSettings: project.layerSettings || createLayerSettings()
     }));
   }
 
@@ -2261,6 +2657,7 @@
     project.rails = restored.rails;
     project.connections = restored.connections;
     project.source = restored.source || project.source || { isOn: true };
+    project.layerSettings = normalizeLayerSettings(restored.layerSettings);
 
     resetInteractionState();
     clearConnectionDraft();
@@ -2846,8 +3243,15 @@
     return points.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
   }
 
+  // Возвращает две независимые части разметки, чтобы каждая попала в свою
+  // группу <g>: polyline-хало/линии → #layer-wires, подписи → #layer-labels.
+  // Обёртка подписи наследует классы провода, поэтому CSS-правила вида
+  // `.wire--l2 .wire-badge rect` продолжают работать в слое подписей.
   function buildWiresMarkup(layouts) {
-    return layouts.map((layout) => {
+    const wires = [];
+    const labels = [];
+
+    for (const layout of layouts) {
       const connection = layout.connection;
       const typeKey = WIRE_TYPES[connection.type] ? connection.type : DEFAULT_WIRE_TYPE;
       const type = WIRE_TYPES[typeKey];
@@ -2856,6 +3260,8 @@
       const flowClass = isSimulationOn()
         ? (connection.isLive ? ' is-live' : ' is-dead')
         : '';
+      const wireClass = `wire wire--${typeKey.toLowerCase()}${isSelected ? ' is-selected selected' : ''}${flowClass}`;
+      const wireStyle = `--wire-color:${color};color:${color}`;
       const label = connectionLabel(connection);
       const points = polylinePoints(layout.points);
       const badgeWidth = type.label.length > 1 ? 24 : 16;
@@ -2892,22 +3298,29 @@
           <path class="wire-delete-x" d="M -3 -3 L 3 3 M 3 -3 L -3 3"/>
         </g>` : '';
 
-      return `
-        <g class="wire wire--${typeKey.toLowerCase()}${isSelected ? ' is-selected selected' : ''}${flowClass}"
+      wires.push(`
+        <g class="${wireClass}"
            data-wire-id="${escapeHtml(connection.id)}"
-           style="--wire-color:${color};color:${color}">
+           style="${wireStyle}">
           <title>${escapeHtml(`${label}. ${type.name}. ${connection.isLive ? 'Под напряжением. ' : ''}${showParams ? `Напряжение ${connection.voltage} В, ток ${formatCurrent(connection.current)}. ` : ''}Двойной клик — маркировка провода.`)}</title>
           <polyline class="wire-halo" points="${points}" data-connection-id="${escapeHtml(connection.id)}"
                     tabindex="0" role="button"
                     aria-label="${escapeHtml(`${label}, ${type.name}. Enter — выделить, Delete — удалить, двойной клик — маркировка.`)}"/>
           ${outline}
           <polyline class="wire-path" points="${points}"/>
-          ${customLabel}
-          ${typeBadge}
-          ${currentBadge}
           ${deleteButton}
-        </g>`;
-    }).join('');
+        </g>`);
+
+      const labelMarkup = customLabel + typeBadge + currentBadge;
+      if (labelMarkup) {
+        labels.push(`
+        <g class="label-node ${wireClass}" style="${wireStyle}">
+          ${labelMarkup}
+        </g>`);
+      }
+    }
+
+    return { wires: wires.join(''), labels: labels.join('') };
   }
 
   function buildPreviewWire(positions) {
@@ -2931,7 +3344,7 @@
     return `<polyline class="wire-preview" points="${polylinePoints(layout.points)}"/>`;
   }
 
-  function buildSourceMarkup() {
+  function buildSourceMarkup(occupancy, phases) {
     const { width, height, ports } = POWER_SOURCE;
     const isOn = project?.source?.isOn !== false;
     const radius = 14;
@@ -2985,16 +3398,28 @@
         </g>
         <text class="power-source-switch-label" x="${switchCenterX}" y="${switchY + switchHeight + 13}">${isOn ? 'ВКЛ' : 'ОТКЛ'}</text>
         ${portMarkup}
+        ${buildSourcePortsMarkup(occupancy, phases)}
       </g>`;
   }
 
+  // Пульсация активного порта анимирует только радиус и прозрачность самого
+  // <circle>. SMIL работает в системе координат окружности, поэтому свечение
+  // остаётся привязанным к cx/cy порта и не улетает в левый верхний угол (0,0).
+  function portPulseMarkup(radius) {
+    return `<animate attributeName="r" values="${(radius + 1).toFixed(1)};${(radius + 10).toFixed(1)}" dur="1.15s" repeatCount="indefinite"/>` +
+      `<animate attributeName="opacity" values="0.95;0" dur="1.15s" repeatCount="indefinite"/>`;
+  }
+
+  // Порты источника рендерятся внутри его группы (локальные cx/cy) в
+  // #layer-power-source. Группа всегда видна, поэтому порты доступны для
+  // подключения проводов даже при выключенном слое «Модули».
   function buildSourcePortsMarkup(occupancy, phases) {
     const regular = [];
     let activeMarkup = '';
     const phaseMap = phases || new Map();
 
     POWER_SOURCE.ports.forEach((label, index) => {
-      const point = sourcePortPoint(index);
+      const point = localSourcePortPoint(index);
       const portId = makePortId(POWER_SOURCE.id, 'bottom', index);
       const portRef = { moduleId: POWER_SOURCE.id, side: 'bottom', index };
       const isActive = samePort(activePort, portRef);
@@ -3014,6 +3439,7 @@
       const phaseAttrs = phase
         ? `data-phase="${phase}" data-phase-label="Источник · ${escapeHtml(label)}" style="--port-phase-color:${wireDisplayColor(phase)}"`
         : '';
+      const pulse = isActive ? portPulseMarkup(PORT_RADIUS) : '';
       const markup = `
         <g class="${classes}" id="${portId}" data-port-id="${portId}" data-module-id="${POWER_SOURCE.id}"
            data-side="bottom" data-index="${index}" data-hit-radius="${PORT_HIT_RADIUS}"
@@ -3021,7 +3447,7 @@
            ${phaseAttrs}
            aria-label="${escapeHtml(`Источник питания · ${label}.${phaseHint} ${hint}`)}">
           <circle class="port-hit" cx="${point.x.toFixed(1)}" cy="${point.y}" r="${PORT_HIT_RADIUS}"/>
-          <circle class="port-halo" cx="${point.x.toFixed(1)}" cy="${point.y}" r="8"/>
+          <circle class="port-halo" cx="${point.x.toFixed(1)}" cy="${point.y}" r="8">${pulse}</circle>
           <circle class="port-dot" cx="${point.x.toFixed(1)}" cy="${point.y}" r="${PORT_RADIUS}"/>
         </g>`;
       if (isActive) activeMarkup = markup;
@@ -3031,60 +3457,61 @@
     return regular.join('') + activeMarkup;
   }
 
-  function buildPortsMarkup(modules, positions, occupancy, phases) {
+  // Порты конкретного модуля. Возвращают разметку в ЛОКАЛЬНЫХ координатах
+  // корпуса: она вставляется прямо внутрь <g class="module"> перед </g>.
+  // Благодаря этому порты, хало и SMIL-пульсация всегда живут в слое
+  // модулей, имеют корректные cx/cy и не превращаются в артефакт у (0,0).
+  function buildModulePortsMarkup(module, width, occupancy, phases) {
+    if (module.__ghost) return '';
     const regular = [];
     let activeMarkup = '';
     const phaseMap = phases || new Map();
+    const counts = portsForModule(module);
+    const busType = isBusbarModule(module) ? busbarTypeOf(module) : null;
+    const busLive = Boolean(busType) && isSimulationOn() && moduleHasLivePort(module, livePorts);
 
-    for (const module of modules) {
-      const position = positions.get(module.id);
-      if (!position || module.__ghost) continue;
-      const counts = portsForModule(module);
-      const busType = isBusbarModule(module) ? busbarTypeOf(module) : null;
-      const busLive = Boolean(busType) && isSimulationOn() && moduleHasLivePort(module, livePorts);
-
-      for (const side of PORT_SIDES) {
-        for (let index = 0; index < counts[side]; index += 1) {
-          const point = modulePortPoint(position, side, index, counts);
-          const x = point.x;
-          const y = point.y;
-          const dotRadius = isSidePort(side) ? SIDE_PORT_RADIUS : PORT_RADIUS;
-          const hitRadius = isSidePort(side) ? SIDE_PORT_HIT_RADIUS : PORT_HIT_RADIUS;
-          const portId = makePortId(module.id, side, index);
-          const portRef = { moduleId: module.id, side, index };
-          const isActive = samePort(activePort, portRef);
-          const isPending = samePort(pendingWire, portRef);
-          const phase = phaseMap.get(portId) || null;
-          const phaseName = phase ? WIRE_TYPES[phase].name : '';
-          const classes = [
-            'port',
-            isSidePort(side) ? 'port--side' : '',
-            isActive ? 'is-active' : '',
-            isPending ? 'is-pending' : '',
-            occupancy.has(portId) ? 'is-connected' : '',
-            phase ? 'has-phase' : '',
-            busLive ? 'is-bus-live' : '',
-            busLive && busType ? `bus-live-${busType.toLowerCase()}` : ''
-          ].filter(Boolean).join(' ');
-          const hint = isActive ? 'Выберите второй порт' : 'Нажмите, чтобы начать провод';
-          const phaseHint = phase ? ` Фаза ${phase} (${phaseName}).` : '';
-          const phaseAttrs = phase
-            ? `data-phase="${phase}" data-phase-label="${escapeHtml(formatPortLabel(module, side, index))}" style="--port-phase-color:${wireDisplayColor(phase)}"`
-            : '';
-          const markup = `
-            <g class="${classes}" id="${portId}" data-port-id="${portId}" data-module-id="${escapeHtml(module.id)}"
-               data-side="${side}" data-index="${index}" data-hit-radius="${hitRadius}"
-               tabindex="0" role="button"
-               ${phaseAttrs}
-               aria-label="${escapeHtml(`${formatPortLabel(module, side, index)}.${phaseHint} ${hint}`)}">
-              <circle class="port-hit" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${hitRadius}"/>
-              <circle class="port-halo" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${dotRadius + 4}"/>
-              <circle class="port-dot" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${dotRadius}"/>
-            </g>`;
-          // Активный порт рисуется последним — поверх остальных портов.
-          if (isActive) activeMarkup = markup;
-          else regular.push(markup);
-        }
+    for (const side of PORT_SIDES) {
+      for (let index = 0; index < counts[side]; index += 1) {
+        const point = localModulePortPoint(width, side, index, counts);
+        const x = point.x;
+        const y = point.y;
+        const dotRadius = isSidePort(side) ? SIDE_PORT_RADIUS : PORT_RADIUS;
+        const hitRadius = isSidePort(side) ? SIDE_PORT_HIT_RADIUS : PORT_HIT_RADIUS;
+        const portId = makePortId(module.id, side, index);
+        const portRef = { moduleId: module.id, side, index };
+        const isActive = samePort(activePort, portRef);
+        const isPending = samePort(pendingWire, portRef);
+        const phase = phaseMap.get(portId) || null;
+        const phaseName = phase ? WIRE_TYPES[phase].name : '';
+        const classes = [
+          'port',
+          isSidePort(side) ? 'port--side' : '',
+          isActive ? 'is-active' : '',
+          isPending ? 'is-pending' : '',
+          occupancy.has(portId) ? 'is-connected' : '',
+          phase ? 'has-phase' : '',
+          busLive ? 'is-bus-live' : '',
+          busLive && busType ? `bus-live-${busType.toLowerCase()}` : ''
+        ].filter(Boolean).join(' ');
+        const hint = isActive ? 'Выберите второй порт' : 'Нажмите, чтобы начать провод';
+        const phaseHint = phase ? ` Фаза ${phase} (${phaseName}).` : '';
+        const phaseAttrs = phase
+          ? `data-phase="${phase}" data-phase-label="${escapeHtml(formatPortLabel(module, side, index))}" style="--port-phase-color:${wireDisplayColor(phase)}"`
+          : '';
+        const pulse = isActive ? portPulseMarkup(dotRadius) : '';
+        const markup = `
+          <g class="${classes}" id="${portId}" data-port-id="${portId}" data-module-id="${escapeHtml(module.id)}"
+             data-side="${side}" data-index="${index}" data-hit-radius="${hitRadius}"
+             tabindex="0" role="button"
+             ${phaseAttrs}
+             aria-label="${escapeHtml(`${formatPortLabel(module, side, index)}.${phaseHint} ${hint}`)}">
+            <circle class="port-hit" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${hitRadius}"/>
+            <circle class="port-halo" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${dotRadius + 4}">${pulse}</circle>
+            <circle class="port-dot" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${dotRadius}"/>
+          </g>`;
+        // Активный порт рисуется последним — поверх остальных портов модуля.
+        if (isActive) activeMarkup = markup;
+        else regular.push(markup);
       }
     }
     return regular.join('') + activeMarkup;
@@ -3093,7 +3520,7 @@
   function overlayAnchor(ref) {
     if (!ref) return null;
     const portId = makePortId(ref.moduleId, ref.side, ref.index);
-    const element = dom.portLayer.querySelector(`[data-port-id="${portId}"] .port-dot`);
+    const element = dom.canvas.querySelector(`[data-port-id="${portId}"] .port-dot`);
     return element ? element.getBoundingClientRect() : null;
   }
 
@@ -3252,7 +3679,7 @@
   // винтов-клемм сверху и снизу. Отрисовывается отдельно от стандартных
   // модулей, но сохраняет те же data-атрибуты, удаление и фокус.
   function buildBusbarModuleMarkup(module, x, y, options = {}) {
-    const { isGhost = false, isInvalidGhost = false, isPending = false } = options;
+    const { isGhost = false, isInvalidGhost = false, isPending = false, portsMarkup = '' } = options;
     const width = module.width * MODULE_UNIT;
     const color = safeColor(module.color) || '#64748b';
     const busType = busbarTypeOf(module) || 'N';
@@ -3300,7 +3727,7 @@
          aria-label="${escapeHtml(`${module.tag}: ${module.name}, ширина ${module.width} ${modulesWord}. Шина ${busType} с ${screwCount} клеммами сверху и снизу. Перетаскивание меняет слот; порты создают провода только типа ${busType}.`)}"`;
 
     return `
-      <g class="module module--busbar module--busbar-${typeClass}${isGhost ? ' module--ghost' : ''}${isInvalidGhost ? ' module--ghost-invalid' : ''}${isPending ? ' is-pending' : ''}${isLive ? ' is-bus-live' : ''}"
+      <g class="module module--busbar module--busbar-${typeClass}${isGhost ? ' module--ghost' : ''}${isInvalidGhost ? ' module--ghost-invalid' : ''}${isPending ? ' is-pending' : ''}${isLive ? ' is-bus-live' : ''}${module.groupId ? ' is-grouped' : ''}"
          data-module-id="${escapeHtml(module.id)}" transform="translate(${x} ${y})"
          style="--module-accent:${color}" ${interactiveAttributes}>
         <title>${escapeHtml(`${module.tag} · ${module.name}`)}</title>
@@ -3312,7 +3739,6 @@
         ${screwMarkup}
         <text class="busbar-label" x="${width / 2}" y="${MODULE_HEIGHT / 2 - 2}">${label}</text>
         <text class="busbar-sublabel" x="${width / 2}" y="${MODULE_HEIGHT / 2 + 17}">${sublabel}</text>
-        ${moduleDescriptionMarkup(module, width, MODULE_HEIGHT - 34)}
         <g class="busbar-tag" transform="translate(${width / 2 - 23} 31)">
           <rect x="0" y="0" width="46" height="16" rx="4"/>
           <text x="23" y="11.5">${escapeHtml(module.tag)}</text>
@@ -3322,6 +3748,7 @@
         <rect class="module-focus-ring" x="-4" y="-4" width="${width + 8}" height="${MODULE_HEIGHT + 8}"
               rx="13" fill="none" stroke="${color}"/>
         ${pendingBadge}
+        ${portsMarkup}
       </g>`;
   }
 
@@ -3329,7 +3756,7 @@
   // серебро для PE) вдоль левой или правой грани и 10 мелких клемм на ней.
   // Подпись стоит по центру корпуса и не перекрывает клеммы.
   function buildSideBusbarModuleMarkup(module, x, y, options = {}) {
-    const { isGhost = false, isInvalidGhost = false, isPending = false } = options;
+    const { isGhost = false, isInvalidGhost = false, isPending = false, portsMarkup = '' } = options;
     const width = module.width * MODULE_UNIT;
     const color = safeColor(module.color) || '#3b82f6';
     const busType = busbarTypeOf(module) || 'N';
@@ -3366,7 +3793,7 @@
          aria-label="${escapeHtml(`${module.tag}: ${module.name}, ширина 1 модуль. Шина ${busType} с ${terminalCount} клеммами ${sideWord}. Перетаскивание меняет слот; порты создают провода только типа ${busType}.`)}"`;
 
     return `
-      <g class="module module--side-busbar module--side-busbar-${typeClass}${isGhost ? ' module--ghost' : ''}${isInvalidGhost ? ' module--ghost-invalid' : ''}${isPending ? ' is-pending' : ''}${isLive ? ' is-bus-live' : ''}"
+      <g class="module module--side-busbar module--side-busbar-${typeClass}${isGhost ? ' module--ghost' : ''}${isInvalidGhost ? ' module--ghost-invalid' : ''}${isPending ? ' is-pending' : ''}${isLive ? ' is-bus-live' : ''}${module.groupId ? ' is-grouped' : ''}"
          data-module-id="${escapeHtml(module.id)}" transform="translate(${x} ${y})"
          style="--module-accent:${color}" ${interactiveAttributes}>
         <title>${escapeHtml(`${module.tag} · ${module.name}`)}</title>
@@ -3382,12 +3809,12 @@
         <line class="side-busbar-plate-edge" x1="${plateX + 2}" y1="10" x2="${plateX + 2}"
               y2="${MODULE_HEIGHT - 10}"/>
         <text class="side-busbar-label side-busbar-label--${typeClass}" x="${width / 2}" y="${labelY}">${busType}</text>
-        ${moduleDescriptionMarkup(module, width, MODULE_HEIGHT - 48)}
         <text class="module-width" x="${widthX}" y="${MODULE_HEIGHT - 8}">1P</text>
         ${deleteButton}
         <rect class="module-focus-ring" x="-4" y="-4" width="${width + 8}" height="${MODULE_HEIGHT + 8}"
               rx="13" fill="none" stroke="${color}"/>
         ${pendingBadge}
+        ${portsMarkup}
       </g>`;
   }
 
@@ -3405,7 +3832,7 @@
   // Потребитель: 1P-корпус с значком лампочки и подписью мощности.
   // Мощность редактируется двойным кликом и сохраняется в модуле.
   function buildLoadModuleMarkup(module, x, y, options) {
-    const { isGhost, isInvalidGhost, isPending, color } = options;
+    const { isGhost, isInvalidGhost, isPending, color, portsMarkup = '' } = options;
     const width = module.width * MODULE_UNIT;
     const radius = 9;
     const overloaded = !isGhost && isModuleOverloaded(module);
@@ -3437,7 +3864,7 @@
          aria-label="${escapeHtml(`${module.tag}: ${module.name}, мощность ${power}. Двойной клик — изменить мощность, порты сверху и снизу создают провода.`)}"`;
 
     return `
-      <g class="module module--body-light module--load${isGhost ? ' module--ghost' : ''}${isInvalidGhost ? ' module--ghost-invalid' : ''}${isPending ? ' is-pending' : ''}${overloaded ? ' is-overloaded' : ''}"
+      <g class="module module--body-light module--load${isGhost ? ' module--ghost' : ''}${isInvalidGhost ? ' module--ghost-invalid' : ''}${isPending ? ' is-pending' : ''}${overloaded ? ' is-overloaded' : ''}${module.groupId ? ' is-grouped' : ''}"
          data-module-id="${escapeHtml(module.id)}" transform="translate(${x} ${y})"
          style="--module-accent:${color}" ${interactiveAttributes}>
         <title>${escapeHtml(`${module.tag} · ${module.name} · ${power}${overloaded ? ' · перегрузка' : ''}`)}</title>
@@ -3467,25 +3894,39 @@
         ${deleteButton}
         <rect class="module-focus-ring" x="-4" y="-4" width="${width + 8}" height="${MODULE_HEIGHT + 8}"
               rx="13" fill="none" stroke="${color}"/>
+        ${portsMarkup}
       </g>`;
   }
 
-  function buildModuleMarkup(module, x, index, isInvalidGhost = false, y = RAIL.moduleY) {
+  function buildModuleMarkup(module, x, index, isInvalidGhost = false, y = RAIL.moduleY, portContext = null) {
     const width = module.width * MODULE_UNIT;
     const isGhost = Boolean(module.__ghost);
     const color = safeColor(module.color) || WIRE_COLORS[index % WIRE_COLORS.length];
     const isPending = !isGhost && (
       activePort?.moduleId === module.id || pendingWire?.moduleId === module.id
     );
+    // Порты собираются в той же функции, что и корпус, и вставляются прямо
+    // в его <g> — они никогда не попадают в соседний слой или на (0,0).
+    const portsMarkup = portContext
+      ? buildModulePortsMarkup(
+        module, width, portContext.occupancy, portContext.phases
+      )
+      : '';
     if (isLoadModule(module)) {
-      return buildLoadModuleMarkup(module, x, y, { isGhost, isInvalidGhost, isPending, color, index });
+      return buildLoadModuleMarkup(module, x, y, {
+        isGhost, isInvalidGhost, isPending, color, index, portsMarkup
+      });
     }
     if (isBusbarModule(module)) {
       const counts = portsForModule(module);
       if (counts.left > 0 || counts.right > 0) {
-        return buildSideBusbarModuleMarkup(module, x, y, { isGhost, isInvalidGhost, isPending });
+        return buildSideBusbarModuleMarkup(module, x, y, {
+          isGhost, isInvalidGhost, isPending, portsMarkup
+        });
       }
-      return buildBusbarModuleMarkup(module, x, y, { isGhost, isInvalidGhost, isPending });
+      return buildBusbarModuleMarkup(module, x, y, {
+        isGhost, isInvalidGhost, isPending, portsMarkup
+      });
     }
     const widthLabel = `${module.width}P`;
     const modulesWord = plural(module.width, ['модуль', 'модуля', 'модулей']);
@@ -3584,7 +4025,7 @@
          aria-label="${escapeHtml(`${module.tag}: ${module.name}, ширина ${module.width} ${modulesWord}.${switchable ? ` Сейчас ${isOn ? 'включён' : 'отключён'}.` : ''} Перетаскивание меняет слот; порты сверху и снизу создают провода.`)}"`;
 
     return `
-      <g class="module module--body-${bodyVariant}${isGhost ? ' module--ghost' : ''}${isInvalidGhost ? ' module--ghost-invalid' : ''}${isPending ? ' is-pending' : ''}${overloaded ? ' is-overloaded' : ''}"
+      <g class="module module--body-${bodyVariant}${isGhost ? ' module--ghost' : ''}${isInvalidGhost ? ' module--ghost-invalid' : ''}${isPending ? ' is-pending' : ''}${overloaded ? ' is-overloaded' : ''}${module.groupId ? ' is-grouped' : ''}"
          data-module-id="${escapeHtml(module.id)}" transform="translate(${x} ${y})"
          style="--module-accent:${color}" ${interactiveAttributes}>
         <title>${escapeHtml(`${module.tag} · ${module.name}`)}</title>
@@ -3600,7 +4041,6 @@
         ${circuit}
         <text class="module-rating" x="${panelCenterX.toFixed(1)}" y="${MODULE_HEIGHT - 50}">${escapeHtml(rating)}</text>
         <text class="module-brand" x="${panelCenterX.toFixed(1)}" y="${MODULE_HEIGHT - 41}">${escapeHtml(brand)}</text>
-        ${moduleDescriptionMarkup(module, width, MODULE_HEIGHT - 28)}
         <text class="module-name${verticalName ? ' is-vertical' : ''}${switchable && verticalName ? ' is-switch-vertical' : ''}"
               ${verticalName ? `transform="${nameTransform}"` : `x="${width / 2}" y="${nameY}"`}>${escapeHtml(nameText)}</text>
         <rect class="module-terminal-panel" x="1" y="${MODULE_HEIGHT - 22}" width="${width - 2}" height="21" rx="5"/>
@@ -3611,6 +4051,7 @@
         <rect class="module-focus-ring" x="-4" y="-4" width="${width + 8}" height="${MODULE_HEIGHT + 8}"
               rx="13" fill="none" stroke="${color}"/>
         ${pendingBadge}
+        ${portsMarkup}
       </g>`;
   }
 
@@ -3639,6 +4080,59 @@
     if (!dragState || !dragState.overRail) return idle();
     const targetRail = railById(dragState.targetRailId);
     if (!targetRail) return idle();
+
+    // Склейка: все участники снимаются со старых мест и показываются
+    // призраками сразу на новых — видно, куда встанет вся группа целиком.
+    if (dragState.groupId && dragState.groupMemberIds?.length > 1 &&
+        dragState.groupPlacements?.length) {
+      const excluded = new Set(dragState.groupMemberIds);
+      rails.forEach((item) => {
+        item.modules = item.modules.filter((module) => !excluded.has(module.id));
+      });
+
+      let collision = false;
+      let firstGhostId = null;
+      dragState.groupPlacements.forEach((placement) => {
+        const source = moduleById(placement.id);
+        const item = rails.find((entry) => entry.rail.id === placement.railId);
+        if (!source || !item) {
+          collision = true;
+          return;
+        }
+        if (!placement.valid) collision = true;
+        const ghost = {
+          ...source,
+          __ghost: true,
+          __ghostInvalid: !placement.valid,
+          slot: clamp(placement.slot, 0, Math.max(0, item.rail.capacity - source.width))
+        };
+        item.modules.push(ghost);
+        item.ghostId = ghost.id;
+        item.ghostInvalid = item.ghostInvalid || !placement.valid;
+        item.dropSlot = dragState.dropSlot;
+        if (!firstGhostId) firstGhostId = ghost.id;
+      });
+
+      rails.forEach((item) => {
+        item.required = item.modules.reduce(
+          (max, module) => Math.max(max, module.slot + module.width), 0
+        );
+        item.overflow = item.required > item.rail.capacity;
+      });
+      const active = rails.find((entry) => entry.rail.id === targetRail.id);
+      return {
+        rails,
+        ghostId: firstGhostId,
+        overRail: true,
+        activeRailId: targetRail.id,
+        overflow: Boolean(active?.overflow),
+        collision,
+        dropSlot: dragState.dropSlot,
+        dropWidth: dragState.width,
+        required: active?.required || 0,
+        capacity: targetRail.capacity
+      };
+    }
 
     let ghost;
     if (dragState.kind === 'reorder') {
@@ -4008,6 +4502,50 @@
       `height="${MODULE_HEIGHT + 10}" rx="9"/>`;
   }
 
+  // Общая рамка вокруг всех модулей склейки. Строится по тем же позициям,
+  // что и сами модули (включая призраков при перетаскивании), поэтому во
+  // время drag&drop рамка едет вместе с группой. Группы из одного модуля
+  // (например, после удаления соседей) не рисуются.
+  function buildGroupBoxesMarkup(preview) {
+    const groups = new Map();
+    preview.rails.forEach((item, railIndex) => {
+      item.modules.forEach((module) => {
+        const groupId = safeGroupId(module.groupId);
+        if (!groupId) return;
+        if (!groups.has(groupId)) groups.set(groupId, []);
+        groups.get(groupId).push({
+          x: moduleSlotX(module.slot),
+          y: railModuleY(railIndex),
+          width: module.width * MODULE_UNIT,
+          height: MODULE_HEIGHT
+        });
+      });
+    });
+
+    const boxes = [];
+    groups.forEach((rects, groupId) => {
+      if (rects.length < 2) return;
+      const pad = 9;
+      const left = Math.min(...rects.map((rect) => rect.x)) - pad;
+      const top = Math.min(...rects.map((rect) => rect.y)) - pad;
+      const right = Math.max(...rects.map((rect) => rect.x + rect.width)) + pad;
+      const bottom = Math.max(...rects.map((rect) => rect.y + rect.height)) + pad;
+      const invalid = Boolean(
+        dragState && dragState.groupId === groupId && !dragState.valid
+      );
+      const shortId = groupId.replace(/^grp_/, '').slice(-6);
+      boxes.push(
+        `<g class="group-box${invalid ? ' is-invalid' : ''}" data-group-id="${escapeHtml(groupId)}">` +
+          `<rect x="${viewNumber(left)}" y="${viewNumber(top)}" ` +
+            `width="${viewNumber(right - left)}" height="${viewNumber(bottom - top)}" rx="15"/>` +
+          `<text class="group-box-label" x="${viewNumber(left + 4)}" y="${viewNumber(top - 6)}">` +
+            `Склейка · ${escapeHtml(shortId)}</text>` +
+        `</g>`
+      );
+    });
+    return boxes.join('');
+  }
+
   function renderCanvas() {
     const preview = buildPreview();
     const overRail = preview.overRail;
@@ -4020,27 +4558,44 @@
     dom.canvasShell.classList.toggle('is-connecting', Boolean(activePort));
     updateCanvasSize();
 
-    dom.railLayer.innerHTML = preview.rails
+    // Каждая перерисовка очищает СОДЕРЖИМОЕ трёх переключаемых и двух
+    // статичных групп, но не трогает сами <g>: их классы .hidden/.locked
+    // и порядок остаются прежними. Статичные группы не имеют тумблеров.
+    for (const key of LAYER_KEYS) {
+      const layer = document.getElementById(LAYER_ELEMENT_IDS[key]);
+      if (layer) layer.innerHTML = '';
+    }
+    if (dom.railTrack) dom.railTrack.innerHTML = '';
+    if (dom.powerSourceLayer) dom.powerSourceLayer.innerHTML = '';
+
+    const occupancy = getPortOccupancy();
+    const phases = computePortPhases();
+    const portContext = { occupancy, phases };
+
+    // #rail-track — пластины DIN-реек и подсветка слота. Группа не является
+    // слоем: фон реек всегда виден и не блокируется панелью «Слои».
+    dom.railTrack.innerHTML = preview.rails
       .map((item, index) => buildRailMarkup(
         item.rail,
         index,
         item.overflow || Boolean(item.ghostInvalid),
         overRail && item.rail.id === preview.activeRailId
       ))
-      .join('') + buildSlotHighlight(preview);
+      .join('') + buildSlotHighlight(preview) + buildGroupBoxesMarkup(preview);
 
     const positions = new Map();
-    const previewModules = [];
     let globalIndex = 0;
-    const moduleMarkup = preview.rails.map((item, railIndex) => {
+    let moduleMarkup = '';
+    let descriptionMarkup = '';
+    for (const [railIndex, item] of preview.rails.entries()) {
       const moduleY = railModuleY(railIndex);
       const ordered = item.modules.slice().sort((a, b) => a.slot - b.slot);
-      return ordered.map((module) => {
+      for (const module of ordered) {
         const width = module.width * MODULE_UNIT;
         // X модуля вычисляется из слота, а не из накопленной ширины:
         // пустые слоты между модулями остаются пустыми.
         const x = moduleSlotX(module.slot);
-        positions.set(module.id, {
+        const position = {
           x,
           center: x + width / 2,
           width,
@@ -4048,26 +4603,37 @@
           railId: item.rail.id,
           railIndex,
           module
-        });
-        previewModules.push(module);
-        const markup = buildModuleMarkup(
-          module, x, globalIndex,
-          Boolean(module.__ghostInvalid), moduleY
+        };
+        positions.set(module.id, position);
+        // Корпус + заводской текст + порты — всё в одном <g> слоя модулей.
+        moduleMarkup += buildModuleMarkup(
+          module, x, globalIndex, Boolean(module.__ghostInvalid), moduleY, portContext
         );
+        // Пользовательское описание уходит в слой подписей.
+        const baseline = moduleDescriptionBaseline(module);
+        if (baseline !== null) {
+          descriptionMarkup += moduleDescriptionMarkup(module, position, baseline);
+        }
         globalIndex += 1;
-        return markup;
-      }).join('');
-    }).join('');
-
+      }
+    }
     dom.moduleLayer.innerHTML = moduleMarkup;
+
+    // Источник питания — фиксированный элемент интерфейса со своим текстом,
+    // рубильником и пятью портами. Он рендерится в отдельной группе и НЕ
+    // входит в #layer-modules: выключение слоя «Модули» его не скроет.
+    if (dom.powerSourceLayer) {
+      dom.powerSourceLayer.innerHTML = buildSourceMarkup(occupancy, phases);
+    }
     updateSelectionClasses();
-    dom.sourceLayer.innerHTML = buildSourceMarkup();
-    dom.wireLayer.innerHTML = buildWiresMarkup(buildWireLayouts(positions));
-    const occupancy = getPortOccupancy();
-    const phases = computePortPhases();
-    dom.portLayer.innerHTML = buildPortsMarkup(previewModules, positions, occupancy, phases) +
-      buildSourcePortsMarkup(occupancy, phases);
-    dom.previewLayer.innerHTML = buildPreviewWire(positions);
+
+    // #layer-wires — только polyline проводов и их хало; превью тоже polyline.
+    // #layer-labels — только пользовательские подписи: названия проводов
+    // (бейджи и маркировка) и описания модулей.
+    const wireMarkup = buildWiresMarkup(buildWireLayouts(positions));
+    dom.wireLayer.innerHTML = wireMarkup.wires + buildPreviewWire(positions);
+    dom.labelLayer.innerHTML = wireMarkup.labels + descriptionMarkup;
+
     if (dom.portPhaseTooltip) dom.portPhaseTooltip.hidden = true;
     positionOverlays();
 
@@ -4098,7 +4664,7 @@
     const grouped = new Map();
 
     allModules().forEach((module) => {
-      const key = module.libraryId || `name:${module.name}`;
+      const key = priceKeyFor(module);
       if (!grouped.has(key)) {
         grouped.set(key, {
           key,
@@ -4108,6 +4674,7 @@
           color: module.color,
           brand: moduleBrand(module),
           sku: moduleSku(module),
+          price: modulePrice(module),
           count: 0,
           tags: [],
           descriptions: [],
@@ -4289,6 +4856,11 @@
     dom.exportCsvSecondary.disabled = !hasModules;
     dom.clearProject.disabled = !hasModules && project.connections.length === 0;
     if (dom.addRail) dom.addRail.disabled = project.rails.length >= MAX_RAILS;
+
+    const picked = selectedModules();
+    if (dom.groupBtn) dom.groupBtn.disabled = picked.length < 2;
+    if (dom.ungroupBtn) dom.ungroupBtn.disabled = !picked.some((module) => module.groupId);
+
     updateHistoryButtons();
   }
 
@@ -4304,6 +4876,10 @@
     updateConnectionUI();
     updateActionState();
     updateDocumentTitle();
+    applyLayerSettings();
+    // Если открыта вкладка журнала, она тоже пересчитывается при любом
+    // изменении проекта (undo/redo, импорт и т. д.).
+    if (activeTab === 'journal') renderJournal();
   }
 
   /* --------------------------- Drag & drop ---------------------------- */
@@ -4315,21 +4891,36 @@
   }
 
   // Координатный поиск порта: страховка для случаев, когда DOM-цель клика
-  // перекрыта оверлеем или вложенным элементом. Позиции портов заданы в
-  // координатах схемы, а точка указателя уже переведена через getSVGCoords —
-  // поэтому совпадение работает при любом зуме и панорамировании.
+  // перекрыта оверлеем или вложенным элементом. Порты теперь лежат внутри
+  // сдвинутых групп модулей, поэтому их локальные cx/cy переводятся в
+  // координаты viewBox через матрицы CTM (иначе сравнение было бы неверным).
   function portElementAtPoint(point) {
     if (!point) return null;
+    const svgToScreen = dom.canvas.getScreenCTM?.();
+    if (!svgToScreen) return null;
+    const screenToSvg = svgToScreen.inverse();
     let best = null;
     let bestDistance = Infinity;
-    dom.portLayer.querySelectorAll('[data-port-id]').forEach((portElement) => {
+    const portElements = [
+      ...dom.moduleLayer.querySelectorAll('[data-port-id]'),
+      ...(dom.powerSourceLayer
+        ? dom.powerSourceLayer.querySelectorAll('[data-port-id]')
+        : [])
+    ];
+    portElements.forEach((portElement) => {
       const dot = portElement.querySelector('.port-dot');
       if (!dot) return;
+      const dotToScreen = dot.getScreenCTM?.();
+      if (!dotToScreen) return;
       const x = Number(dot.getAttribute('cx'));
       const y = Number(dot.getAttribute('cy'));
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      // локальные координаты порта → координаты viewBox холста
+      const matrix = screenToSvg.multiply(dotToScreen);
+      const absX = matrix.a * x + matrix.c * y + matrix.e;
+      const absY = matrix.b * x + matrix.d * y + matrix.f;
       const hitRadius = Number(portElement.dataset.hitRadius) || PORT_HIT_RADIUS;
-      const distance = Math.hypot(point.x - x, point.y - y);
+      const distance = Math.hypot(point.x - absX, point.y - absY);
       if (distance <= hitRadius && distance < bestDistance) {
         bestDistance = distance;
         best = portElement;
@@ -4349,6 +4940,67 @@
       }
     }
     return null;
+  }
+
+  // Раскладывает все модули склейки по новым местам и проверяет КАЖДЫЙ из
+  // них: выход за рейку, наезд на чужой модуль и наезд друг на друга.
+  // delta считается по модулю, за который схватились, и применяется ко всем.
+  function computeGroupPlacements(targetRailIndex, primaryDropSlot) {
+    const primaryOrigin = dragState.memberOrigins?.get(dragState.moduleId);
+    if (!primaryOrigin) return [];
+
+    const railDelta = targetRailIndex - primaryOrigin.railIndex;
+    const slotDelta = primaryDropSlot - primaryOrigin.slot;
+    const groupIds = new Set(dragState.groupMemberIds || []);
+
+    // Занятые слоты всех реек без текущих позиций самой группы: модули
+    // склейки не должны мешать сами себе при пересчёте новых координат.
+    const occupied = new Map();
+    project.rails.forEach((rail) => occupied.set(rail.id, occupiedSlots(rail)));
+    groupIds.forEach((id) => {
+      const location = railOfModule(id);
+      if (!location) return;
+      const used = occupied.get(location.rail.id);
+      if (!used) return;
+      for (let offset = 0; offset < location.module.width; offset += 1) {
+        used.delete(location.module.slot + offset);
+      }
+    });
+
+    const ownSlots = new Map(); // railId -> Set слотов, уже занятых участниками группы
+    const placements = [];
+    dragState.groupMemberIds.forEach((id) => {
+      const origin = dragState.memberOrigins.get(id);
+      if (!origin) return;
+      const railIndex = origin.railIndex + railDelta;
+      const slot = origin.slot + slotDelta;
+      const rail = project.rails[railIndex] || null;
+      const inBounds = Boolean(rail) && Number.isInteger(slot) &&
+        slot >= 0 && slot + origin.width <= rail.capacity;
+      const used = rail ? (occupied.get(rail.id) || new Set()) : new Set();
+      const own = rail ? (ownSlots.get(rail.id) || new Set()) : new Set();
+      const free = inBounds &&
+        rangeIsFree(used, slot, origin.width) &&
+        rangeIsFree(own, slot, origin.width);
+
+      placements.push({
+        id,
+        railId: rail ? rail.id : origin.railId,
+        railIndex,
+        slot,
+        width: origin.width,
+        valid: free,
+        reason: free ? null : (inBounds ? 'collision' : 'overflow')
+      });
+
+      if (rail) {
+        if (inBounds) {
+          for (let offset = 0; offset < origin.width; offset += 1) own.add(slot + offset);
+        }
+        ownSlots.set(rail.id, own);
+      }
+    });
+    return placements;
   }
 
   function updateDragPosition(point) {
@@ -4371,18 +5023,29 @@
         targetRail.capacity,
         dragState.grabOffsetPx
       );
-      valid = canPlaceModule(
-        targetRail,
-        dropSlot,
-        dragState.width,
-        dragState.kind === 'reorder' ? dragState.moduleId : null
-      );
+
+      if (dragState.groupId && dragState.groupMemberIds?.length > 1) {
+        dragState.groupPlacements = computeGroupPlacements(railIndex, dropSlot);
+        valid = dragState.groupPlacements.length > 0 &&
+          dragState.groupPlacements.every((placement) => placement.valid);
+      } else {
+        dragState.groupPlacements = [];
+        valid = canPlaceModule(
+          targetRail,
+          dropSlot,
+          dragState.width,
+          dragState.kind === 'reorder' ? dragState.moduleId : null
+        );
+      }
+    } else {
+      dragState.groupPlacements = [];
     }
 
     const changed = dragState.overRail !== overRail ||
       dragState.dropSlot !== dropSlot ||
       dragState.valid !== valid ||
-      dragState.targetRailId !== targetRailId;
+      dragState.targetRailId !== targetRailId ||
+      Boolean(dragState.groupId);
 
     dragState.overRail = overRail;
     dragState.dropSlot = dropSlot;
@@ -4438,13 +5101,17 @@
       if (!moduleById(id)) selectedModuleIds.delete(id);
     });
     if (!dom.moduleLayer) return;
-    dom.moduleLayer.querySelectorAll('[data-module-id]').forEach((element) => {
+    // Порты тоже несут data-module-id, но используются только корпуса.
+    // Источник питания лежит в отдельной группе и никогда не выделяется.
+    dom.moduleLayer.querySelectorAll('.module').forEach((element) => {
       if (element.classList.contains('module--ghost')) return;
       element.classList.toggle(
         'selected',
         selectedModuleIds.has(element.getAttribute('data-module-id'))
       );
     });
+    // Доступность кнопок «Склеить/Разъединить» зависит от текущего выделения.
+    updateActionState();
   }
 
   function clearSelection() {
@@ -4467,6 +5134,376 @@
     selectedConnectionId = null;
     cancelWireSelection();
     updateSelectionClasses();
+  }
+
+  /* --------------------- Склейка и разъединение ------------------------ */
+
+  // Склеить: все выделенные (рамкой или Shift+кликом) модули получают один
+  // общий groupId. Один уникальный идентификатор на всю группу.
+  function groupSelectedModules() {
+    const modules = selectedModules();
+    if (modules.length < 2) {
+      showToast('Выделите хотя бы 2 модуля рамкой или Shift+Кликом.', 'error', 3600);
+      return;
+    }
+    const groupId = makeId('grp');
+    modules.forEach((module) => { module.groupId = groupId; });
+
+    clearConnectionDraft();
+    persistProject();
+    commitHistory();
+    renderAll();
+    showToast(
+      `Склеено модулей: ${modules.length}. Теперь они двигаются вместе · Ctrl+Shift+G — разъединить`,
+      'success',
+      3600
+    );
+  }
+
+  // Разъединить: у всех выделенных модулей просто убираем groupId.
+  function ungroupSelectedModules() {
+    const modules = selectedModules().filter((module) => module.groupId);
+    if (modules.length === 0) {
+      showToast('Среди выделенных модулей нет склеенных.', 'error', 3200);
+      return;
+    }
+    modules.forEach((module) => { delete module.groupId; });
+
+    persistProject();
+    commitHistory();
+    renderAll();
+    showToast(`Разъединено модулей: ${modules.length}`, 'success', 2600);
+  }
+
+  /* ---------------- Контекстное меню / буфер обмена ------------------- */
+
+  // Иконки меню — только локальные строки, в HTML попадают как есть.
+  const CONTEXT_ICONS = Object.freeze({
+    delete: '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4.5 6h11M8 6V4.5h4V6m-6 0 .7 10h6.6L14 6M8.6 9v4.4M11.4 9v4.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    duplicate: '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="6.75" y="6.75" width="9.5" height="9.5" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M13.25 4.25H5.5a1.5 1.5 0 0 0-1.5 1.5v7.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+    group: '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.4" y="6" width="6.7" height="8.4" rx="1.6" stroke="currentColor" stroke-width="1.5"/><rect x="10.9" y="6" width="6.7" height="8.4" rx="1.6" stroke="currentColor" stroke-width="1.5"/><path d="M9.1 8.3h1.8m-1.8 3.4h1.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+    ungroup: '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.4" y="6" width="6.7" height="8.4" rx="1.6" stroke="currentColor" stroke-width="1.5"/><rect x="10.9" y="6" width="6.7" height="8.4" rx="1.6" stroke="currentColor" stroke-width="1.5"/><path d="m9.2 8.1 1.6 3.8m0-3.8-1.6 3.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+    edit: '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M13.1 4.3a1.7 1.7 0 0 1 2.4 2.4l-7.6 7.6-3.2.8.8-3.2 7.6-7.6Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>',
+    paste: '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="4.5" y="5.75" width="11" height="10" rx="1.8" stroke="currentColor" stroke-width="1.5"/><path d="M7.5 5.75V4.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1.25M7.5 9.5h5M7.5 12.5h3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+    reset: '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3.5 9.3a6.5 6.5 0 1 1 1.6 5.2M3.5 14.5V10h4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+  });
+
+  function closeContextMenu() {
+    contextMenuState = null;
+    if (dom.contextMenu) dom.contextMenu.hidden = true;
+  }
+
+  // Меню позиционируется в координатах окна (position: fixed). Если у курсора
+  // не хватает места справа/снизу — раскрываем влево/вверх.
+  function positionContextMenu(clientX, clientY) {
+    if (!dom.contextMenu) return;
+    dom.contextMenu.hidden = false;
+    const width = dom.contextMenu.offsetWidth;
+    const height = dom.contextMenu.offsetHeight;
+    const margin = 8;
+    const left = clientX + width + margin > window.innerWidth ? clientX - width : clientX;
+    const top = clientY + height + margin > window.innerHeight ? clientY - height : clientY;
+    dom.contextMenu.style.left = `${clamp(left, margin, Math.max(margin, window.innerWidth - width - margin))}px`;
+    dom.contextMenu.style.top = `${clamp(top, margin, Math.max(margin, window.innerHeight - height - margin))}px`;
+  }
+
+  function renderContextMenu(items, headText) {
+    if (!dom.contextMenuItems) return;
+    if (dom.contextMenuHead) dom.contextMenuHead.textContent = headText || '';
+    dom.contextMenuItems.replaceChildren();
+
+    items.forEach((item) => {
+      if (item.separator) {
+        const separator = document.createElement('div');
+        separator.className = 'context-menu-separator';
+        separator.setAttribute('role', 'separator');
+        dom.contextMenuItems.appendChild(separator);
+        return;
+      }
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `context-menu-item${item.danger ? ' is-danger' : ''}`;
+      button.setAttribute('role', 'menuitem');
+      button.disabled = Boolean(item.disabled);
+      button.innerHTML = `${item.icon || ''}<span class="context-menu-item-label">${escapeHtml(item.label)}</span>${item.hint ? `<span class="context-menu-item-hint">${escapeHtml(item.hint)}</span>` : ''}`;
+      button.addEventListener('click', () => {
+        closeContextMenu();
+        item.action?.();
+      });
+      dom.contextMenuItems.appendChild(button);
+    });
+  }
+
+  // Псевдо-якорь для поля подписи: при открытии из ПКМ поле появляется прямо
+  // под курсором, а не у габарита всего провода.
+  function cursorAnchor(clientX, clientY) {
+    return {
+      getBoundingClientRect: () => ({
+        left: clientX, top: clientY, right: clientX, bottom: clientY,
+        x: clientX, y: clientY, width: 0, height: 0
+      })
+    };
+  }
+
+  // Рейка под курсором: внутри пластины — точное попадание, вне — ближайшая.
+  function railAtPoint(point) {
+    let nearest = project.rails[0] || null;
+    let bestDistance = Infinity;
+    project.rails.forEach((rail, index) => {
+      const top = railPlateY(index);
+      const distance = point.y >= top && point.y <= top + RAIL.height
+        ? 0
+        : Math.abs(point.y - (top + RAIL.height / 2));
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        nearest = rail;
+      }
+    });
+    return nearest;
+  }
+
+  function copyModuleData(module) {
+    const data = { ...module };
+    if (module.ports && typeof module.ports === 'object') data.ports = { ...module.ports };
+    return data;
+  }
+
+  // Копия данных модулей плюс новые id для склеек, чтобы дубликаты оставались
+  // сгруппированными между собой, но не влияли на исходную группу.
+  function makeModuleClipboard(modules) {
+    const items = [];
+    const groupMap = new Map();
+    modules.filter(Boolean).forEach((module) => {
+      const location = railOfModule(module.id);
+      const item = { data: copyModuleData(module), railId: location?.rail.id || null };
+      if (safeGroupId(module.groupId)) {
+        if (!groupMap.has(module.groupId)) groupMap.set(module.groupId, makeId('grp'));
+        item.groupId = groupMap.get(module.groupId);
+      }
+      items.push(item);
+    });
+    return { items, groupMap };
+  }
+
+  function copyModulesToClipboard() {
+    let modules = selectedModules();
+    if (modules.length === 0 && lastContextModuleId) {
+      const module = moduleById(lastContextModuleId);
+      if (module) modules = [module];
+    }
+    if (modules.length === 0) {
+      showToast('Выделите модули, чтобы скопировать их (Ctrl+C).', 'error', 3200);
+      return false;
+    }
+    moduleClipboard = makeModuleClipboard(modules);
+    showToast(
+      `Скопировано модулей: ${modules.length}. Ctrl+V — вставить`,
+      'success',
+      2800
+    );
+    return true;
+  }
+
+  // Проверяем все целевые слоты заранее: либо вставляем всю пачку, либо ничего.
+  function planPlacements(items, rail, baseSlot) {
+    const used = new Set();
+    rail.modules.forEach((module) => {
+      for (let offset = 0; offset < module.width; offset += 1) {
+        used.add(module.slot + offset);
+      }
+    });
+    const sorted = items.slice().sort((first, second) => first.data.slot - second.data.slot);
+    const minSlot = sorted.length ? sorted[0].data.slot : 0;
+    const placements = [];
+    for (const item of sorted) {
+      const width = item.data.width;
+      let slot = clamp(baseSlot + (item.data.slot - minSlot), 0, Math.max(0, rail.capacity - width));
+      if (!rangeIsFree(used, slot, width)) slot = firstFreeSlot(used, width, rail.capacity);
+      if (slot === null || !rangeIsFree(used, slot, width)) return null;
+      for (let offset = 0; offset < width; offset += 1) used.add(slot + offset);
+      placements.push({ item, slot });
+    }
+    return placements;
+  }
+
+  function moduleTagPrefix(module) {
+    const fromTag = String(module?.tag || '').match(/^[A-Za-zА-Яа-я]{1,4}/u);
+    return fromTag
+      ? fromTag[0]
+      : (LIBRARY_BY_ID.get(module?.libraryId)?.tagPrefix || 'M');
+  }
+
+  // Общая вставка копий. preferredRail/baseSlot задают точку смещения; если на
+  // ней нет места — пробуем остальные рейки по очереди.
+  function insertClonedModules(payload, options = {}) {
+    const items = payload?.items || [];
+    if (items.length === 0 || project.rails.length === 0) return [];
+
+    const preferredRail = options.rail || railAtPoint(options.point) || project.rails[0];
+    const baseSlot = Number.isFinite(options.baseSlot) ? options.baseSlot : 0;
+    let targetRail = null;
+    let placements = null;
+    for (const rail of [preferredRail, ...project.rails.filter((item) => item !== preferredRail)]) {
+      const plan = planPlacements(items, rail, rail === preferredRail ? baseSlot : 0);
+      if (plan) {
+        targetRail = rail;
+        placements = plan;
+        break;
+      }
+    }
+    if (!placements) {
+      reportNoRoom(preferredRail, items.reduce((total, item) => total + item.data.width, 0));
+      return [];
+    }
+
+    const created = [];
+    const reservedTags = new Set();
+    placements.forEach(({ item, slot }) => {
+      const module = copyModuleData(item.data);
+      module.id = makeId('mod');
+      module.slot = slot;
+      if (item.groupId) module.groupId = item.groupId;
+      else delete module.groupId;
+      module.tag = generateTag(moduleTagPrefix(item.data), allModules(), reservedTags);
+      reservedTags.add(module.tag.toUpperCase());
+      targetRail.modules.push(module);
+      created.push(module);
+    });
+
+    clearConnectionDraft();
+    normalizeSlots();
+    persistProject();
+    commitHistory();
+    renderAll();
+    // Новые модули остаются выделенными — с ними можно сразу работать дальше.
+    selectedModuleIds.clear();
+    created.forEach((module) => selectedModuleIds.add(module.id));
+    updateSelectionClasses();
+    return created;
+  }
+
+  function defaultPastePoint() {
+    const rect = dom.canvas.getBoundingClientRect();
+    return svgPointFromClient(rect.left + rect.width / 2, rect.top + rect.height / 2);
+  }
+
+  function pasteModulesAt(point) {
+    if (!moduleClipboard || moduleClipboard.items.length === 0) {
+      showToast('Буфер обмена пуст — сначала скопируйте модули (Ctrl+C).', 'error', 3200);
+      return false;
+    }
+    const target = point || lastPointerSvgPoint || defaultPastePoint();
+    const items = moduleClipboard.items;
+    const minSlot = Math.min(...items.map((item) => item.data.slot));
+    const baseSlot = Math.round((target.x - RAIL.startX) / MODULE_UNIT) - minSlot;
+    const created = insertClonedModules(moduleClipboard, {
+      rail: railAtPoint(target),
+      baseSlot
+    });
+    if (created.length) {
+      showToast(`Вставлено модулей: ${created.length}`, 'success', 2600);
+    }
+    return created.length > 0;
+  }
+
+  // Дублирование «со смещением»: копия встаёт на один свободный слот правее
+  // исходного модуля (или правого края всей выделенной группы).
+  function duplicateModulesAtOffset(moduleId) {
+    const clicked = moduleById(moduleId);
+    if (!clicked) return;
+    const modules = (selectedModuleIds.has(moduleId) && selectedModuleIds.size > 1)
+      ? selectedModules()
+      : [clicked];
+    const location = railOfModule(modules[0].id);
+    if (!location) return;
+    const rightEdge = modules.reduce((max, module) => Math.max(max, module.slot + module.width), 0);
+    const created = insertClonedModules(makeModuleClipboard(modules), {
+      rail: location.rail,
+      baseSlot: rightEdge + 1
+    });
+    if (created.length) {
+      showToast(`Дублировано модулей: ${created.length} · со смещением`, 'success', 2600);
+    }
+  }
+
+  function onContextMenu(event) {
+    // Системное меню оставляем в полях ввода, диалогах и служебных панелях.
+    if (event.target.closest?.('input, textarea, select, [contenteditable="true"], dialog, .context-menu, .layers-panel, .wire-type-popover')) return;
+    closeContextMenu();
+    if (editing) commitInlineEdit();
+    event.preventDefault();
+
+    const svgPoint = getSVGCoords(event);
+    lastPointerSvgPoint = svgPoint;
+    const clientX = event.clientX;
+    const clientY = event.clientY;
+
+    const moduleElement = event.target.closest?.('[data-module-id]');
+    const moduleId = moduleElement?.getAttribute('data-module-id');
+    if (moduleId && moduleId !== POWER_SOURCE.id && moduleById(moduleId)) {
+      // ПКМ по невыделенному модулю сначала выделяет его.
+      if (!selectedModuleIds.has(moduleId)) toggleModuleSelection(moduleId, false);
+      lastContextModuleId = moduleId;
+      contextMenuState = { kind: 'module', id: moduleId, svgPoint };
+
+      const count = selectedModuleIds.size;
+      const hasGroups = selectedModules().some((module) => module.groupId);
+      const items = [
+        { label: 'Удалить', hint: 'Del', danger: true, icon: CONTEXT_ICONS.delete, action: () => deleteSelected() },
+        { label: 'Дублировать', icon: CONTEXT_ICONS.duplicate, action: () => duplicateModulesAtOffset(moduleId) }
+      ];
+      if (count > 1) {
+        items.push(hasGroups
+          ? { label: 'Разъединить', hint: 'Ctrl+Shift+G', icon: CONTEXT_ICONS.ungroup, action: ungroupSelectedModules }
+          : { label: 'Склеить', hint: 'Ctrl+G', icon: CONTEXT_ICONS.group, action: groupSelectedModules });
+      }
+      items.push({ separator: true });
+      items.push({
+        label: 'Изменить подпись',
+        icon: CONTEXT_ICONS.edit,
+        action: () => {
+          const anchor = dom.moduleLayer.querySelector(`[data-module-id="${moduleId}"]`) || moduleElement;
+          // Редактируем только пользовательскую подпись (description).
+          // Заводское название (name) остаётся нетронутым — оно идёт в смету
+          // и спецификацию и не должно меняться из контекстного меню.
+          openInlineEditor('module', moduleId, anchor);
+        }
+      });
+      renderContextMenu(items, count > 1 ? `Модулей выбрано: ${count}` : 'Модуль');
+      positionContextMenu(clientX, clientY);
+      return;
+    }
+
+    const wireElement = event.target.closest?.('[data-connection-id], [data-wire-id]');
+    const connectionId = wireElement?.getAttribute('data-connection-id') ||
+      wireElement?.getAttribute('data-wire-id');
+    if (connectionId && project.connections.some((connection) => connection.id === connectionId)) {
+      selectConnection(connectionId);
+      contextMenuState = { kind: 'wire', id: connectionId, svgPoint };
+      renderContextMenu([
+        { label: 'Удалить', hint: 'Del', danger: true, icon: CONTEXT_ICONS.delete, action: () => removeConnection(connectionId) },
+        {
+          label: 'Изменить примечание',
+          icon: CONTEXT_ICONS.edit,
+          action: () => openInlineEditor('wire', connectionId, cursorAnchor(clientX, clientY))
+        }
+      ], 'Провод');
+      positionContextMenu(clientX, clientY);
+      return;
+    }
+
+    // Пустое место холста.
+    contextMenuState = { kind: 'canvas', id: null, svgPoint };
+    const items = [];
+    if (moduleClipboard && moduleClipboard.items.length) {
+      items.push({
+        label: 'Вставить', hint: 'Ctrl+V', icon: CONTEXT_ICONS.paste,
+        action: () => pasteModulesAt(svgPoint)
+      });
+    }
+    items.push({ label: 'Сбросить вид', hint: 'Home', icon: CONTEXT_ICONS.reset, action: resetView });
+    renderContextMenu(items, 'Холст');
+    positionContextMenu(clientX, clientY);
   }
 
   function hideSelectionBox() {
@@ -4496,7 +5533,7 @@
       '[data-module-id]', '[data-wire-id]', '[data-connection-id]', '[data-port-id]',
       '[data-delete-module]', '[data-delete-wire]', '[data-delete-rail]',
       '[data-rail-capacity]', '[data-toggle-module]', '[data-toggle-source]',
-      'button', 'a', 'input', '[role="button"]', '[role="switch"]'
+      '.power-source', 'button', 'a', 'input', '[role="button"]', '[role="switch"]'
     ].join(', '));
   }
 
@@ -4609,6 +5646,34 @@
         grabOffsetPx: grabX - moduleSlotX(sourceModule.slot),
         valid: false
       };
+
+      // Склейка: тащим ВСЕ модули с тем же groupId. За точку отсчёта берём
+      // модуль, за который схватились: его смещение (railDelta/slotDelta)
+      // одинаково применяется ко всем остальным участникам группы.
+      const groupId = safeGroupId(sourceModule.groupId);
+      const members = modulesOfGroup(groupId);
+      if (members.length > 1) {
+        const origins = new Map();
+        members.forEach((member) => {
+          const location = railOfModule(member.id);
+          if (!location) return;
+          origins.set(member.id, {
+            railId: location.rail.id,
+            railIndex: location.index,
+            slot: member.slot,
+            width: member.width
+          });
+        });
+        const primary = railOfModule(sourceModule.id);
+        if (primary && origins.has(sourceModule.id)) {
+          dragState.groupId = groupId;
+          dragState.groupMemberIds = members.map((member) => member.id);
+          dragState.memberOrigins = origins;
+          dragState.primaryRailIndex = primary.index;
+          dragState.primarySlot = sourceModule.slot;
+          dragState.groupPlacements = [];
+        }
+      }
     }
 
     document.body.classList.add('is-dragging');
@@ -4701,6 +5766,63 @@
     persistProject();
     commitHistory();
     renderAll();
+    return true;
+  }
+
+  // Атомарный перенос всей склейки: либо встают ВСЕ модули, либо ни один.
+  // Валидация уже выполнена в computeGroupPlacements(); здесь только применяем
+  // результат, чтобы не оставить группу в половинчатом состоянии.
+  function moveModuleGroup(finished) {
+    const placements = finished.groupPlacements || [];
+    if (!finished.valid || placements.length === 0) {
+      flashCanvasError();
+      showToast(
+        'Группа не помещается: место занято или выходит за рейку — перенос отменён.',
+        'error',
+        4200
+      );
+      renderAll();
+      return false;
+    }
+
+    const changed = placements.some((placement) => {
+      const location = railOfModule(placement.id);
+      return !location ||
+        location.rail.id !== placement.railId ||
+        location.module.slot !== placement.slot;
+    });
+    if (!changed) {
+      renderAll();
+      return false;
+    }
+
+    // Сначала отсоединяем все модули, затем раскладываем по новым рейкам:
+    // так перенос между рейками не ломает индексы и не создаёт коллизий.
+    const detached = new Map();
+    placements.forEach((placement) => {
+      const location = railOfModule(placement.id);
+      if (!location) return;
+      detached.set(placement.id, location.module);
+      location.rail.modules = location.rail.modules.filter(
+        (module) => module.id !== placement.id
+      );
+    });
+    placements.forEach((placement) => {
+      const module = detached.get(placement.id);
+      if (!module) return;
+      module.slot = placement.slot;
+      const rail = railById(placement.railId);
+      if (rail) rail.modules.push(module);
+      project.connections.forEach((connection) => {
+        if (connection.fromModuleId === placement.id) connection.fromRailId = placement.railId;
+        if (connection.toModuleId === placement.id) connection.toRailId = placement.railId;
+      });
+    });
+
+    persistProject();
+    commitHistory();
+    renderAll();
+    showToast(`Группа перемещена: ${placements.length} модулей`, 'success', 2400);
     return true;
   }
 
@@ -4816,6 +5938,11 @@
         railId: finished.targetRailId,
         tag: finished.ghostTag
       });
+      return;
+    }
+
+    if (finished.groupId && finished.groupMemberIds?.length > 1) {
+      moveModuleGroup(finished);
       return;
     }
 
@@ -5051,6 +6178,9 @@
   }
 
   function onDocumentPointerDown(event) {
+    // Любой клик вне меню закрывает его (в том числе по кнопке ПКМ — перед
+    // открытием нового меню в onContextMenu).
+    if (!event.target.closest?.('.context-menu')) closeContextMenu();
     // Средняя кнопка — это панорамирование, а не выбор порта: не сбрасываем
     // подготовленный провод и не меняем состояние схемы.
     if (event.pointerType === 'mouse' && event.button === 1) return;
@@ -5109,6 +6239,9 @@
     }).length;
 
     location.rail.modules = location.rail.modules.filter((item) => item.id !== moduleId);
+    // Удалённый модуль разрывает склейку: остальные участники становятся
+    // обычными модулями (удаляется только тот, на котором нажат крестик).
+    dissolveGroupsOf([module]);
     project.connections = project.connections.filter((connection) => {
       return connection.fromModuleId !== moduleId && connection.toModuleId !== moduleId;
     });
@@ -5152,6 +6285,9 @@
     project.rails.forEach((rail) => {
       rail.modules = rail.modules.filter((module) => !ids.has(module.id));
     });
+    // Как и при удалении через «×»: удаляются только выбранные модули,
+    // а оставшиеся участники их склеек больше не связаны.
+    dissolveGroupsOf(modules);
     project.connections = project.connections.filter(
       (connection) => !removedConnectionIds.has(connection.id)
     );
@@ -5202,7 +6338,7 @@
     commitHistory();
     renderAll();
 
-    const nextSwitch = dom.sourceLayer?.querySelector('[data-toggle-source]');
+    const nextSwitch = dom.powerSourceLayer?.querySelector('[data-toggle-source]');
     if (nextSwitch && typeof nextSwitch.focus === 'function') {
       nextSwitch.focus({ preventScroll: true });
     }
@@ -5363,18 +6499,20 @@
     if (!editing || !dom.inlineEditor) return;
     const { kind, id } = editing;
     const isModule = kind === 'module';
+    const isName = kind === 'name';
     const isPower = kind === 'loadPower';
-    const field = isPower ? 'power' : (isModule ? 'description' : 'label');
+    const field = isPower ? 'power' : (isName ? 'name' : (isModule ? 'description' : 'label'));
     const value = isPower
       ? normalizeLoadPower(dom.inlineEditor.value, DEFAULT_LOAD_POWER)
       : safeText(
           dom.inlineEditor.value,
           '',
-          isModule ? MAX_MODULE_DESCRIPTION_LENGTH : MAX_WIRE_LABEL_LENGTH
+          isName ? MAX_MODULE_NAME_LENGTH
+            : (isModule ? MAX_MODULE_DESCRIPTION_LENGTH : MAX_WIRE_LABEL_LENGTH)
         );
     closeInlineEditor();
 
-    const item = (isModule || isPower)
+    const item = (isModule || isPower || isName)
       ? moduleById(id)
       : project.connections.find((connection) => connection.id === id);
     if (!item || item[field] === value) return;
@@ -5410,8 +6548,9 @@
   function openInlineEditor(kind, id, anchor) {
     if (!dom.inlineEditor || !anchor) return;
     const isModule = kind === 'module';
+    const isName = kind === 'name';
     const isPower = kind === 'loadPower';
-    const item = (isModule || isPower)
+    const item = (isModule || isPower || isName)
       ? moduleById(id)
       : project.connections.find((connection) => connection.id === id);
     if (!item) return;
@@ -5424,13 +6563,14 @@
     commitInlineEdit();
     clearConnectionDraft();
 
-    const field = isPower ? 'power' : (isModule ? 'description' : 'label');
+    const field = isPower ? 'power' : (isName ? 'name' : (isModule ? 'description' : 'label'));
     editing = { kind, id, anchorRect };
     // Глобальная привязка поля к редактируемому элементу.
     currentEditingId = id;
     currentEditingType = kind;
     const editor = dom.inlineEditor;
-    const context = isPower ? 'Мощность нагрузки, Вт' : (isModule ? 'Описание модуля' : 'Маркировка провода');
+    const context = isPower ? 'Мощность нагрузки, Вт'
+      : (isName ? 'Название модуля' : (isModule ? 'Описание модуля' : 'Маркировка провода'));
     editor.type = isPower ? 'number' : 'text';
     if (isPower) {
       editor.min = String(MIN_LOAD_POWER);
@@ -5441,9 +6581,9 @@
       editor.removeAttribute('min');
       editor.removeAttribute('max');
       editor.removeAttribute('step');
-      editor.maxLength = isModule
-        ? MAX_MODULE_DESCRIPTION_LENGTH
-        : MAX_WIRE_LABEL_LENGTH;
+      editor.maxLength = isName
+        ? MAX_MODULE_NAME_LENGTH
+        : (isModule ? MAX_MODULE_DESCRIPTION_LENGTH : MAX_WIRE_LABEL_LENGTH);
     }
     editor.value = isPower
       ? String(normalizeLoadPower(item.power, DEFAULT_LOAD_POWER))
@@ -5452,9 +6592,11 @@
     editor.setAttribute('aria-label', context);
     editor.placeholder = isPower
       ? `Например: 2000 · I = P / ${NOMINAL_VOLTAGE} · Enter — сохранить`
-      : (isModule
-          ? 'Например: Розетки в туалете · Enter — сохранить'
-          : 'Например: Свет в комнате · Enter — сохранить');
+      : (isName
+          ? 'Например: Автомат C16 · Enter — сохранить'
+          : (isModule
+              ? 'Например: Розетки в туалете · Enter — сохранить'
+              : 'Например: Свет в комнате · Enter — сохранить'));
     editor.hidden = false;
     placeOverlay(editor, editing.anchorRect, 10);
     editor.focus({ preventScroll: true });
@@ -5487,7 +6629,9 @@
     const direct = event.target;
     const target = direct?.closest?.('[data-module-id]') ? direct : hitElementAtEvent(event);
     const moduleElement = target?.closest?.('[data-module-id]');
-    if (!moduleElement || target.closest?.('[data-delete-module]')) return;
+    // Порт лежит внутри модуля: двойной клик по клемме не должен открывать
+    // редактор описания модуля.
+    if (!moduleElement || target.closest?.('[data-delete-module], [data-port-id]')) return;
     const moduleId = moduleElement.getAttribute('data-module-id');
     if (!moduleId || moduleId === POWER_SOURCE.id) return;
     event.preventDefault();
@@ -5573,6 +6717,18 @@
     const isEditable = event.target.matches?.('input, textarea, select, [contenteditable="true"]');
     const inDialog = Boolean(event.target.closest?.('dialog'));
 
+    // Открытое контекстное меню закрывается по Escape и по любой «рабочей»
+    // клавише. Ctrl+C / Ctrl+V проходят дальше и работают с буфером модулей.
+    if (contextMenuState) {
+      const isClipboardKey = (event.ctrlKey || event.metaKey) &&
+        ['c', 'v'].includes(event.key.toLowerCase());
+      if (event.key === 'Escape' || !isClipboardKey) {
+        if (event.key === 'Escape') event.preventDefault();
+        closeContextMenu();
+        if (event.key === 'Escape') return;
+      }
+    }
+
     // Пока открыто inline-поле, горячие клавиши холста не должны удалять
     // элементы или сбрасывать выделение. Delete/Backspace внутри самого поля
     // остаются обычным редактированием текста (preventDefault не нужен).
@@ -5608,6 +6764,25 @@
     if ((event.ctrlKey || event.metaKey) && !event.altKey && !isEditable &&
         !event.target.closest?.('dialog')) {
       const key = event.key.toLowerCase();
+      // Буфер обмена модулями: Ctrl+C — скопировать выделенные, Ctrl+V —
+      // вставить в точку курсора на холсте (или в центр текущего вида).
+      if (key === 'c') {
+        event.preventDefault();
+        copyModulesToClipboard();
+        return;
+      }
+      if (key === 'v') {
+        event.preventDefault();
+        pasteModulesAt(lastPointerSvgPoint || defaultPastePoint());
+        return;
+      }
+      // Склейка выделенных модулей: Ctrl+G / Ctrl+Shift+G (разъединение).
+      if (key === 'g') {
+        event.preventDefault();
+        if (event.shiftKey) ungroupSelectedModules();
+        else groupSelectedModules();
+        return;
+      }
       if (key === 'z') {
         event.preventDefault();
         if (event.shiftKey) redo();
@@ -5735,7 +6910,18 @@
   function exportProject() {
     const data = {
       schemaVersion: SCHEMA_VERSION,
-      project
+      project: {
+        ...project,
+        // Кастомные цены хранятся в самом проекте и попадают в JSON.
+        // modulePrice() читает их по id элемента библиотеки при импорте.
+        customPrices: { ...(project.customPrices || {}) },
+        // Цены кабелей за метр — тоже часть проекта и восстанавливаются
+        // normalizeProject() при импорте файла или загрузке из localStorage.
+        customCablePrices: { ...(project.customCablePrices || {}) },
+        // Состояния слоёв (видимость/блокировка) попадают в JSON и в
+        // localStorage вместе с остальным проектом.
+        layerSettings: normalizeLayerSettings(project.layerSettings)
+      }
     };
     const json = JSON.stringify(data, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
@@ -5779,6 +6965,9 @@
     applyView();
 
     renderAll();
+    // Смета может быть уже открыта — обновляем и её, иначе цены из
+    // импортированного проекта (в том числе кабельные) покажутся старыми.
+    renderEstimate();
     return true;
   }
 
@@ -5882,9 +7071,16 @@
     rows.push(['Расход кабеля']);
     rows.push([`Длина с запасом ${reservePercent}% на изгибы и разделку`]);
     rows.push([`Масштаб: 1 модуль DIN = 18 мм (${MODULE_UNIT} px)`]);
-    rows.push(['Тип', 'Длина, м']);
+    rows.push(['Тип', 'Длина, м', 'Цена, руб/м', 'Сумма, руб']);
     for (const key of WIRE_TYPE_KEYS) {
-      rows.push([`Кабель ${WIRE_TYPES[key].label}`, wireLengths[key].toFixed(1)]);
+      const price = wirePrice(key);
+      const meters = wireLengths[key];
+      rows.push([
+        `Кабель ${WIRE_TYPES[key].label}`,
+        meters.toFixed(1),
+        csvNumber(price),
+        csvNumber(roundMoney(meters * price))
+      ]);
     }
 
     const csv = '\uFEFF' + rows.map((row) => row.map(csvCell).join(',')).join('\r\n');
@@ -5892,6 +7088,561 @@
     downloadBlob(blob, `specification-${fileDate()}.csv`);
 
     showToast('Спецификация экспортирована в CSV', 'success', 2600);
+  }
+
+  /* --------------------------- Смета (BOM) ---------------------------- */
+
+  const MONEY_FORMATTER = new Intl.NumberFormat('ru-RU', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2
+  });
+
+  function roundMoney(value) {
+    return Math.round((Number(value) || 0) * 100) / 100;
+  }
+
+  function formatMoney(value) {
+    return MONEY_FORMATTER.format(roundMoney(value));
+  }
+
+  function formatQty(row) {
+    return row.unit === 'м'
+      ? row.qty.toFixed(1).replace('.', ',')
+      : String(row.qty);
+  }
+
+  // В русской локали Excel использует ',' как десятичный разделитель
+  // и ';' как разделитель столбцов.
+  function csvNumber(value) {
+    return String(value).replace('.', ',');
+  }
+
+  // Смета = сгруппированные по id модули + пять строк проводов.
+  // Одинаковые модули попадают в одну строку с суммарным количеством.
+  function buildEstimate() {
+    const items = buildSpecification();
+    const rows = items.map((item) => ({
+      kind: 'module',
+      // key нужен инлайн-редактору цены: по нему значение пишется в
+      // project.customPrices и читается обратно при каждом пересчёте сметы.
+      key: item.key,
+      name: item.name,
+      brand: item.brand || '—',
+      sku: item.sku || '—',
+      qty: item.count,
+      unit: 'шт',
+      price: roundMoney(item.price),
+      total: roundMoney(item.price * item.count)
+    }));
+
+    // Провода всегда присутствуют в смете. Если соединений нет,
+    // calculateWireLengths() вернёт 0 м — это и есть строка-заглушка.
+    const wireLengths = calculateWireLengths();
+    for (const key of WIRE_TYPE_KEYS) {
+      const meters = wireLengths[key];
+      // Редактируемая цена берётся из project.customCablePrices, иначе
+      // используется базовая цена за метр. Сумма строки считается от неё же.
+      const price = wirePrice(key);
+      rows.push({
+        kind: 'wire',
+        // key нужен инлайн-редактору: по нему пишется customCablePrices[key].
+        key,
+        name: `Провод ${key}`,
+        brand: 'Кабель',
+        sku: `WIRE-${key}`,
+        qty: meters,
+        unit: 'м',
+        price,
+        total: roundMoney(meters * price)
+      });
+    }
+
+    const total = roundMoney(rows.reduce((sum, row) => sum + row.total, 0));
+    return { rows, total, hasModules: items.length > 0 };
+  }
+
+  function estimateTableHtml(rows, total) {
+    // Заголовок блока кабелей — только визуальный: в CSV он не попадает.
+    const body = rows.map((row, index) => {
+      const section = row.kind === 'wire' && (index === 0 || rows[index - 1].kind !== 'wire')
+        ? '<tr class="estimate-section-row"><td colspan="8">Кабельная продукция</td></tr>'
+        : '';
+      const priceText = escapeHtml(formatMoney(row.price));
+      // Редактируются и модули, и провода: data-price-kind определяет,
+      // в какой объект состояния (customPrices / customCablePrices) писать.
+      const priceCell = `<td class="est-money est-price" data-price-kind="${row.kind}"
+              data-price-key="${escapeHtml(row.key)}"
+              data-price-value="${row.price}" tabindex="0" role="button"
+              aria-label="Изменить цену: ${priceText} руб"
+              title="Клик или Enter — изменить цену"><span class="est-price-value">${priceText}</span></td>`;
+      return `${section}
+          <tr>
+            <td class="est-num">${index + 1}</td>
+            <td>${escapeHtml(row.name)}</td>
+            <td>${escapeHtml(row.brand)}</td>
+            <td>${escapeHtml(row.sku)}</td>
+            <td class="est-qty">${escapeHtml(formatQty(row))}</td>
+            <td class="est-unit">${escapeHtml(row.unit)}</td>
+            ${priceCell}
+            <td class="est-money">${escapeHtml(formatMoney(row.total))}</td>
+          </tr>`;
+    }).join('');
+
+    return `
+      <table class="estimate-table">
+        <thead>
+          <tr>
+            <th scope="col" class="est-num">№</th>
+            <th scope="col">Наименование</th>
+            <th scope="col">Бренд</th>
+            <th scope="col">Артикул</th>
+            <th scope="col" class="est-qty">Кол-во</th>
+            <th scope="col" class="est-unit">Ед. изм.</th>
+            <th scope="col" class="est-money" title="Нажмите на цену, чтобы изменить её">Цена (руб)</th>
+            <th scope="col" class="est-money">Сумма (руб)</th>
+          </tr>
+        </thead>
+        <tbody>${body}
+        </tbody>
+        <tfoot>
+          <tr class="estimate-total-row">
+            <td colspan="8">ИТОГО: <strong>${escapeHtml(formatMoney(total))} руб.</strong></td>
+          </tr>
+        </tfoot>
+      </table>`;
+  }
+
+  /* ======================== Кабельный журнал ==========================
+     Данные берутся из того же проекта, что и схема: марки W1, W2… назначаются
+     по порядку проводов, адреса — из тегов модулей (QF1, QS1, XT1…) и портов
+     источника, длина — из фактической полилинии провода на холсте.
+     ==================================================================== */
+
+  function buildJournal() {
+    // Длины читаются из отрисованных полилиний, как и в спецификации:
+    // при скрытой вкладке схемы разметка остаётся в DOM, поэтому расчёт
+    // работает и когда пользователь уже перешёл в журнал.
+    const polylines = new Map();
+    if (dom.wireLayer) {
+      dom.wireLayer.querySelectorAll('polyline[data-connection-id]').forEach((polyline) => {
+        polylines.set(polyline.getAttribute('data-connection-id'), polyline);
+      });
+    }
+
+    const rows = project.connections.map((connection, index) => {
+      const typeKey = WIRE_TYPES[connection.type] ? connection.type : DEFAULT_WIRE_TYPE;
+      const type = WIRE_TYPES[typeKey];
+      const meters = (polylineLengthPx(polylines.get(connection.id)) / PIXELS_PER_METER) * WIRE_LENGTH_RESERVE;
+      const length = Math.round(meters * 10) / 10;
+      const label = typeof connection.label === 'string' ? connection.label.trim() : '';
+      return {
+        index: index + 1,
+        id: connection.id,
+        mark: `W${index + 1}`,
+        from: connectionPortLabel(connection, 'from'),
+        to: connectionPortLabel(connection, 'to'),
+        type: type.label,
+        typeKey,
+        length,
+        note: label || '—'
+      };
+    });
+
+    const totalLength = Math.round(rows.reduce((sum, row) => sum + row.length, 0) * 10) / 10;
+    return { rows, totalLength };
+  }
+
+  function journalRowsHtml(rows, interactive = true) {
+    if (rows.length === 0) {
+      return `<tr><td colspan="7" class="journal-empty">Проводов пока нет. Перейдите на вкладку «Схема щита», кликните по порту модуля, затем по второму порту и выберите тип провода.</td></tr>`;
+    }
+
+    return rows.map((row) => {
+      const color = wireDisplayColor(row.typeKey);
+      const noteText = escapeHtml(row.note);
+      // На экране ячейка примечания — инлайн-редактор; в печатном листе
+      // та же таблица выводится обычным текстом без атрибутов управления.
+      const noteCell = interactive
+        ? `<td class="j-note j-note-editable${row.note === '—' ? ' is-empty' : ''}"
+               data-journal-note-id="${escapeHtml(row.id)}"
+               tabindex="0" role="button"
+               aria-label="Примечание провода ${escapeHtml(row.mark)}: ${noteText}. Клик или Enter — изменить"
+               title="Клик или Enter — изменить примечание">${noteText}</td>`
+        : `<td class="j-note">${noteText}</td>`;
+      return `
+        <tr>
+          <td class="j-num">${row.index}</td>
+          <td class="j-mark"><strong>${escapeHtml(row.mark)}</strong></td>
+          <td>${escapeHtml(row.from)}</td>
+          <td>${escapeHtml(row.to)}</td>
+          <td class="j-type-col">
+            <span class="j-type-label"><i class="j-type-dot" style="--wire-type-color:${color}" aria-hidden="true"></i>${escapeHtml(row.type)}</span>
+          </td>
+          <td class="j-length">${formatCableLength(row.length)}</td>
+          ${noteCell}
+        </tr>`;
+    }).join('');
+  }
+
+  function journalTableHtml(rows, totalLength) {
+    return `
+      <table class="journal-table">
+        <thead>
+          <tr>
+            <th scope="col" class="j-num">№</th>
+            <th scope="col" class="j-mark">Марка</th>
+            <th scope="col">Откуда</th>
+            <th scope="col">Куда</th>
+            <th scope="col" class="j-type-col">Тип</th>
+            <th scope="col" class="j-length">Длина, м</th>
+            <th scope="col" class="j-note">Примечание</th>
+          </tr>
+        </thead>
+        <tbody>${journalRowsHtml(rows, false)}</tbody>
+        ${rows.length ? `
+        <tfoot>
+          <tr class="journal-total-row">
+            <td colspan="5">Итого: ${rows.length} ${plural(rows.length, ['провод', 'провода', 'проводов'])}</td>
+            <td class="j-length">${formatCableLength(totalLength)}</td>
+            <td></td>
+          </tr>
+        </tfoot>` : ''}
+      </table>`;
+  }
+
+  function renderJournal() {
+    const journal = buildJournal();
+    const projectTitle = project?.name || 'Новый щит';
+    const today = new Date().toLocaleDateString('ru-RU');
+
+    if (dom.journalSubtitle) {
+      dom.journalSubtitle.textContent =
+        `${projectTitle} · ${today} · ${journal.rows.length} ${plural(journal.rows.length, ['провод', 'провода', 'проводов'])} · ${formatCableLength(journal.totalLength)}`;
+    }
+    if (dom.journalBody) dom.journalBody.innerHTML = journalRowsHtml(journal.rows);
+    if (dom.journalFoot) dom.journalFoot.hidden = journal.rows.length === 0;
+    if (dom.journalTotalCount) dom.journalTotalCount.textContent = String(journal.rows.length);
+    if (dom.journalTotalLength) dom.journalTotalLength.textContent = formatCableLength(journal.totalLength);
+    if (dom.journalDownloadCsv) dom.journalDownloadCsv.disabled = journal.rows.length === 0;
+    if (dom.journalPrint) dom.journalPrint.disabled = journal.rows.length === 0;
+
+    // Печатный лист строится из тех же данных, что и экранная таблица.
+    if (dom.journalPrintSheet) {
+      dom.journalPrintSheet.innerHTML = `<h1>Кабельный журнал</h1>
+        <p class="print-meta">${escapeHtml(projectTitle)} · ${escapeHtml(today)}</p>
+        ${journalTableHtml(journal.rows, journal.totalLength)}`;
+    }
+    return journal;
+  }
+
+  // Возвращает ячейку в текстовый вид без пересборки всей таблицы: иначе
+  // blur предыдущего поля перерисовал бы tbody и «съел» клик по следующей ячейке.
+  function restoreJournalNoteCell(cell, text) {
+    const display = text || '—';
+    const mark = cell.closest('tr')?.querySelector('.j-mark strong')?.textContent || 'провода';
+    cell.classList.remove('is-editing');
+    cell.classList.toggle('is-empty', !text);
+    cell.textContent = display;
+    cell.setAttribute('aria-label', `Примечание провода ${mark}: ${display}. Клик или Enter — изменить`);
+  }
+
+  // Инлайн-редактор примечания в кабельном журнале. Пишет в то же поле
+  // connection.label, что и подпись провода на схеме: после сохранения
+  // перерисовывается холст, и текст появляется над проводом.
+  function startJournalNoteEdit(cell) {
+    if (!cell || cell.classList.contains('is-editing')) return;
+    const connectionId = cell.dataset.journalNoteId;
+    const connection = project.connections.find((item) => item.id === connectionId);
+    if (!connection) return;
+
+    const previous = typeof connection.label === 'string' ? connection.label.trim() : '';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'j-note-input';
+    input.maxLength = MAX_JOURNAL_NOTE_LENGTH;
+    input.value = previous; // пустая ячейка ("—") открывается пустым полем
+    input.title = 'Enter — сохранить · Esc — отмена · потеря фокуса — сохранить';
+    input.setAttribute('aria-label', 'Примечание провода');
+
+    cell.replaceChildren(input);
+    cell.classList.add('is-editing');
+    input.focus();
+    input.select();
+
+    // Guard защищает от повторного сохранения: при возврате ячейки в текстовый
+    // вид у удалённого поля срабатывает blur, но он уже ничего не должен менять.
+    let settled = false;
+    const finish = (commit) => {
+      if (settled) return;
+      settled = true;
+
+      // Не меняем данные, если поле просто открыли и закрыли без правки.
+      const typed = input.value;
+      const value = !commit || typed === previous
+        ? previous // Esc — отмена: восстанавливаем прежний текст
+        : safeText(typed, '', MAX_JOURNAL_NOTE_LENGTH);
+      restoreJournalNoteCell(cell, value);
+      if (value === previous) return;
+
+      // Пустой текст убирает и подпись с провода, и примечание в журнале.
+      connection.label = value;
+      persistProject();
+      commitHistory();
+      // Холст перерисовывается целиком (новая подпись над проводом), таблица
+      // журнала при этом остаётся нетронутой — фокус следующей ячейки жив.
+      renderCanvas();
+    };
+
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        event.stopPropagation();
+        finish(true);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        finish(false);
+      }
+    });
+    // Правка ячейки — отдельный жест: он не должен доходить до глобальных
+    // обработчиков холста, кнопок удаления и горячих клавиш.
+    input.addEventListener('pointerdown', (event) => event.stopPropagation());
+    input.addEventListener('click', (event) => event.stopPropagation());
+    input.addEventListener('dblclick', (event) => event.stopPropagation());
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  // Переключение вкладок. При входе в журнал таблица пересобирается заново:
+  // новый провод, добавленный на схеме, сразу появляется в журнале.
+  function switchViewTab(tab) {
+    const isJournal = tab === 'journal';
+    activeTab = isJournal ? 'journal' : 'schema';
+
+    if (dom.tabSchema) {
+      dom.tabSchema.classList.toggle('is-active', !isJournal);
+      dom.tabSchema.setAttribute('aria-selected', String(!isJournal));
+      dom.tabSchema.tabIndex = isJournal ? -1 : 0;
+    }
+    if (dom.tabJournal) {
+      dom.tabJournal.classList.toggle('is-active', isJournal);
+      dom.tabJournal.setAttribute('aria-selected', String(isJournal));
+      dom.tabJournal.tabIndex = isJournal ? 0 : -1;
+    }
+    if (dom.schemaView) dom.schemaView.hidden = isJournal;
+    if (dom.journalView) dom.journalView.hidden = !isJournal;
+    document.body.classList.toggle('is-journal-tab', isJournal);
+
+    if (isJournal && project) renderJournal();
+  }
+
+  function exportJournalCsv() {
+    const journal = renderJournal();
+    if (journal.rows.length === 0) {
+      showToast('Кабельный журнал пуст — добавьте провода на схеме.', 'error', 3000);
+      return;
+    }
+
+    const rows = [
+      ['№', 'Марка', 'Откуда', 'Куда', 'Тип провода', 'Длина, м', 'Примечание'],
+      ...journal.rows.map((row) => [
+        String(row.index),
+        row.mark,
+        row.from,
+        row.to,
+        row.type,
+        csvNumber(row.length),
+        row.note
+      ]),
+      ['', 'ИТОГО:', '', '', '', csvNumber(journal.totalLength), '']
+    ];
+
+    const csv = '\uFEFF' + rows.map((row) => row.map(csvCell).join(';')).join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    downloadBlob(blob, `cable-journal-${safeFileName(project?.name)}-${fileDate()}.csv`);
+    showToast('Кабельный журнал экспортирован в CSV', 'success', 2600);
+  }
+
+  function printJournal() {
+    printContext = 'journal';
+    renderJournal();
+    window.print();
+  }
+
+  /* -------------------- Инлайн-редактирование цены --------------------- */
+
+  // Приводим введённое значение к числу: пустая строка, буквы, минус
+  // и слишком большие числа считаются некорректными (возвращаем null).
+  function parseCustomPrice(value) {
+    const text = String(value ?? '')
+      .trim()
+      .replace(/\s+/g, '')
+      .replace(',', '.');
+    if (!text) return null;
+    const parsed = Number(text);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > MAX_CUSTOM_PRICE) return null;
+    return roundMoney(parsed);
+  }
+
+  // Единая точка сохранения: цена пишется в нужный объект проекта (модули
+  // или кабели), уходит в localStorage, после чего пересчитываются
+  // спецификация и вся таблица сметы.
+  function applyCustomPrice(key, price, kind) {
+    if (kind === 'wire') {
+      if (!project.customCablePrices || typeof project.customCablePrices !== 'object' ||
+          Array.isArray(project.customCablePrices)) {
+        project.customCablePrices = {};
+      }
+      project.customCablePrices[key] = price;
+    } else {
+      if (!project.customPrices || typeof project.customPrices !== 'object' ||
+          Array.isArray(project.customPrices)) {
+        project.customPrices = {};
+      }
+      project.customPrices[key] = price;
+    }
+    persistProject();
+    renderAll();       // спецификация, метрики, состояние кнопок
+    renderEstimate();  // сумма строки и общий итог с новыми ценами
+    showToast(kind === 'wire'
+      ? 'Цена кабеля сохранена, смета пересчитана'
+      : 'Цена сохранена, смета пересчитана', 'success', 2400);
+  }
+
+  function startPriceEdit(cell) {
+    if (!cell || cell.classList.contains('is-editing')) return;
+    const key = cell.dataset.priceKey;
+    const kind = cell.dataset.priceKind === 'wire' ? 'wire' : 'module';
+    const oldPrice = Number(cell.dataset.priceValue);
+    if (!key || !Number.isFinite(oldPrice)) return;
+
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.min = '0';
+    input.max = String(MAX_CUSTOM_PRICE);
+    input.step = '0.01';
+    input.className = 'est-price-input';
+    input.value = String(oldPrice);
+    input.title = 'Enter — сохранить · Esc — отмена · потеря фокуса — сохранить';
+    input.setAttribute('aria-label', 'Новая цена, руб');
+
+    cell.replaceChildren(input);
+    cell.classList.add('is-editing');
+    input.focus();
+    input.select();
+
+    // Guard защищает от повторного сохранения: после перерисовки таблицы
+    // у удалённого поля срабатывает blur, но он уже ничего не должен менять.
+    let settled = false;
+    const finish = (commit) => {
+      if (settled) return;
+      settled = true;
+
+      if (!commit) {
+        renderEstimate();
+        return;
+      }
+      const price = parseCustomPrice(input.value);
+      if (price === null) {
+        showToast('Некорректная цена — сохранено прежнее значение', 'error', 3000);
+        renderEstimate();
+        return;
+      }
+      const prices = kind === 'wire'
+        ? project.customCablePrices
+        : project.customPrices;
+      const alreadyCustom = Object.prototype.hasOwnProperty.call(prices || {}, key);
+      if (price === roundMoney(oldPrice) && alreadyCustom) {
+        renderEstimate();
+        return;
+      }
+      applyCustomPrice(key, price, kind);
+    };
+
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        finish(true);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        finish(false);
+      } else if (event.key === '-' || event.key === '+' ||
+                 event.key === 'e' || event.key === 'E') {
+        // type="number" всё равно пропускает эти символы — запрещаем ввод.
+        event.preventDefault();
+      }
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  function renderEstimate() {
+    const estimate = buildEstimate();
+    const emptyMessage = 'Проект пуст. Добавьте модули для расчета сметы.';
+    const projectTitle = project?.name || 'Новый щит';
+    const today = new Date().toLocaleDateString('ru-RU');
+
+    if (dom.estimateSubtitle) {
+      dom.estimateSubtitle.textContent = `${projectTitle} · ${today} · цену можно изменить кликом по ячейке`;
+    }
+
+    if (dom.estimateContent) {
+      dom.estimateContent.innerHTML = estimate.hasModules
+        ? estimateTableHtml(estimate.rows, estimate.total)
+        : `<p class="estimate-empty">${escapeHtml(emptyMessage)}</p>`;
+    }
+
+    // Печатный лист строится из тех же данных, что и окно сметы.
+    if (dom.estimatePrintSheet) {
+      dom.estimatePrintSheet.innerHTML = estimate.hasModules
+        ? `<h1>Смета проекта</h1>
+           <p class="print-meta">${escapeHtml(projectTitle)} · ${escapeHtml(today)}</p>
+           ${estimateTableHtml(estimate.rows, estimate.total)}`
+        : `<h1>Смета проекта</h1><p>${escapeHtml(emptyMessage)}</p>`;
+    }
+
+    if (dom.estimateDownloadCsv) dom.estimateDownloadCsv.disabled = !estimate.hasModules;
+    if (dom.estimatePrint) dom.estimatePrint.disabled = !estimate.hasModules;
+    return estimate;
+  }
+
+  function openEstimate() {
+    renderEstimate();
+    if (dom.estimateDialog && typeof dom.estimateDialog.showModal === 'function') {
+      dom.estimateDialog.showModal();
+    }
+  }
+
+  function exportEstimateCsv() {
+    // renderEstimate() заново строит смету через buildEstimate() →
+    // modulePrice(), поэтому в CSV уходят в том числе вручную введённые цены.
+    const estimate = renderEstimate();
+    if (!estimate.hasModules) return;
+
+    const rows = [
+      ['№', 'Наименование', 'Бренд', 'Артикул', 'Кол-во', 'Ед. изм.', 'Цена (руб)', 'Сумма (руб)'],
+      ...estimate.rows.map((row, index) => [
+        String(index + 1),
+        row.name,
+        row.brand,
+        row.sku,
+        csvNumber(formatQty(row)),
+        row.unit,
+        csvNumber(row.price),
+        csvNumber(row.total)
+      ]),
+      ['', 'ИТОГО:', '', '', '', '', '', csvNumber(estimate.total)]
+    ];
+
+    // BOM UTF-8 + ';' — Excel с русской локалью открывает файл без кракозябр.
+    const csv = '\uFEFF' + rows.map((row) => row.map(csvCell).join(';')).join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    downloadBlob(blob, `smeta-${safeFileName(project?.name)}-${fileDate()}.csv`);
+    showToast('Смета экспортирована в CSV', 'success', 2600);
+  }
+
+  function printEstimate() {
+    printContext = 'estimate';
+    renderEstimate();
+    window.print();
   }
 
   /* ------------------------------ PNG --------------------------------- */
@@ -5947,7 +7698,13 @@
   // а не только текущую область просмотра.
   function exportBounds(width, height) {
     const area = { left: 0, top: 0, right: width, bottom: height };
-    const layers = [dom.railLayer, dom.sourceLayer, dom.wireLayer, dom.moduleLayer];
+    const layers = [
+      dom.railTrack,
+      dom.wireLayer,
+      dom.moduleLayer,
+      dom.powerSourceLayer,
+      dom.labelLayer
+    ];
     // Служебные элементы интерфейса в картинку не попадают и в габарите не участвуют.
     const uiSelector = [
       '[data-delete-module]',
@@ -6014,10 +7771,11 @@
     clone.setAttribute('viewBox', `${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}`);
 
     // Убираем элементы интерфейса, которые не являются частью схемы:
-    // превью провода, порты, кнопки удаления, хало и индикаторы выделения.
+    // превью провода, порты (теперь внутри модулей), кнопки удаления,
+    // хало и индикаторы выделения.
     clone.querySelectorAll([
-      '#layer-preview',
-      '#layer-ports',
+      '.wire-preview',
+      '.port',
       '#canvas-hit-area',
       '[data-delete-module]',
       '[data-delete-wire]',
@@ -6156,6 +7914,29 @@
     updateDocumentTitle();
   }
 
+  /* --------------------- Меню «Экспорт» в шапке --------------------- */
+
+  // Меню позиционируется относительно кнопки, но само имеет position: fixed:
+  // так его не обрезает горизонтальная прокрутка шапки на узких экранах.
+  function positionExportMenu() {
+    if (!dom.exportMenu || dom.exportMenu.hidden) return;
+    const triggerRect = dom.exportMenuBtn.getBoundingClientRect();
+    const menuWidth = dom.exportMenu.offsetWidth;
+    const left = Math.min(
+      Math.max(8, triggerRect.right - menuWidth),
+      Math.max(8, window.innerWidth - menuWidth - 8)
+    );
+    dom.exportMenu.style.top = `${triggerRect.bottom + 8}px`;
+    dom.exportMenu.style.left = `${left}px`;
+  }
+
+  function setExportMenu(open) {
+    if (!dom.exportMenu || !dom.exportMenuBtn) return;
+    dom.exportMenu.hidden = !open;
+    dom.exportMenuBtn.setAttribute('aria-expanded', String(open));
+    if (open) positionExportMenu();
+  }
+
   /* ----------------------------- Bindings ----------------------------- */
 
   function bindEvents() {
@@ -6182,12 +7963,42 @@
     // зуме < 100% (дополнительно страхует canvas-hit-area внутри SVG).
     dom.svgWrap.addEventListener('mousedown', onPanMouseDown, { capture: true });
     dom.svgWrap.addEventListener('wheel', onCanvasWheel, { passive: false });
+    // Запоминаем точку курсора в координатах схемы — сюда вставляется буфер
+    // по Ctrl+V (и это же место используется меню «Вставить»).
+    dom.svgWrap.addEventListener('pointermove', (event) => {
+      if (!project) return;
+      lastPointerSvgPoint = getSVGCoords(event);
+    }, { passive: true });
     dom.svgWrap.addEventListener('auxclick', (event) => {
       if (event.button === 1) event.preventDefault(); // без автопрокрутки браузера
     });
     if (dom.zoomInBtn) dom.zoomInBtn.addEventListener('click', () => zoomByStep(VIEW_ZOOM_STEP));
     if (dom.zoomOutBtn) dom.zoomOutBtn.addEventListener('click', () => zoomByStep(1 / VIEW_ZOOM_STEP));
     if (dom.resetViewBtn) dom.resetViewBtn.addEventListener('click', resetView);
+
+    // Панель слоёв: сворачивание и переключатели «глаз» / «замок».
+    if (dom.layersToggle) {
+      dom.layersToggle.addEventListener('click', () => toggleLayersPanel());
+    }
+    if (dom.layersList) {
+      dom.layersList.addEventListener('click', (event) => {
+        const button = event.target.closest?.('.layer-toggle');
+        if (!button || !dom.layersList.contains(button)) return;
+        event.stopPropagation();
+        setLayerSetting(button.dataset.layer, button.dataset.layerAction);
+      });
+    }
+    if (dom.layersPanel) {
+      // Панель — интерфейсный оверлей: колесо и клики на ней не должны
+      // попадать в обработчики зума/панорамирования холста.
+      ['mousedown', 'pointerdown', 'dblclick', 'auxclick'].forEach((type) => {
+        dom.layersPanel.addEventListener(type, (event) => event.stopPropagation());
+      });
+      dom.layersPanel.addEventListener('wheel', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }, { passive: false });
+    }
 
     dom.canvas.addEventListener('pointerdown', onCanvasPointerDown);
     // Рамка выделения начинается только на фоне; mousedown (а не pointerdown)
@@ -6216,8 +8027,13 @@
     dom.moduleLayer.addEventListener('dblclick', onModuleDblClick);
     dom.moduleLayer.addEventListener('keydown', onModuleToggleKeyDown);
 
-    dom.portLayer.addEventListener('pointerover', onPortPointerOver);
-    dom.portLayer.addEventListener('pointerout', onPortPointerOut);
+    // Порты лежат внутри корпусов: слушаем слой модулей и группу источника.
+    dom.moduleLayer.addEventListener('pointerover', onPortPointerOver);
+    dom.moduleLayer.addEventListener('pointerout', onPortPointerOut);
+    if (dom.powerSourceLayer) {
+      dom.powerSourceLayer.addEventListener('pointerover', onPortPointerOver);
+      dom.powerSourceLayer.addEventListener('pointerout', onPortPointerOut);
+    }
     dom.canvas.addEventListener('pointerover', onElementPointerOver);
     dom.canvas.addEventListener('pointerout', onElementPointerOut);
 
@@ -6228,6 +8044,21 @@
       renderAll();
     });
     document.addEventListener('pointerdown', onDocumentPointerDown);
+
+    // Контекстное меню холста: ПКМ по модулю / проводу / пустому месту.
+    document.addEventListener('contextmenu', (event) => {
+      if (!event.target.closest?.('#svg-wrap')) {
+        closeContextMenu(); // вне холста остаётся системное меню
+        return;
+      }
+      onContextMenu(event);
+    });
+    // Меню привязано к точке на экране: при прокрутке/изменении размера окна
+    // его проще закрыть, чем пересчитывать привязку к элементу.
+    // Без capture: прокрутка вложенных панелей (например, библиотеки) не должна
+    // захлопывать меню, привязанное к точке на экране.
+    window.addEventListener('scroll', () => closeContextMenu());
+    window.addEventListener('resize', () => closeContextMenu());
 
     dom.migrationBannerClose.addEventListener('click', () => {
       dom.migrationBanner.hidden = true;
@@ -6272,23 +8103,156 @@
     if (dom.addRail) dom.addRail.addEventListener('click', addRail);
     dom.undoBtn.addEventListener('click', undo);
     dom.redoBtn.addEventListener('click', redo);
+    if (dom.groupBtn) dom.groupBtn.addEventListener('click', groupSelectedModules);
+    if (dom.ungroupBtn) dom.ungroupBtn.addEventListener('click', ungroupSelectedModules);
     dom.exportCsv.addEventListener('click', exportCsv);
     dom.exportCsvSecondary.addEventListener('click', exportCsv);
     dom.exportPng.addEventListener('click', exportPng);
     if (dom.downloadProject) dom.downloadProject.addEventListener('click', exportProject);
+
+    // Выпадающее меню «Экспорт»: открытие/закрытие по клику, закрытие кликом
+    // вне области и по Escape. При скролле/изменении размера меню не закрывается,
+    // а пересчитывает позицию under кнопкой (в том числе при горизонтальной
+    // прокрутке шапки).
+    if (dom.exportMenuBtn) {
+      dom.exportMenuBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        setExportMenu(dom.exportMenu.hidden);
+      });
+    }
+    if (dom.exportDropdown) {
+      dom.exportDropdown.addEventListener('click', (event) => {
+        if (event.target.closest?.('.export-menu-item')) setExportMenu(false);
+      });
+    }
+    document.addEventListener('click', (event) => {
+      if (!dom.exportMenu || dom.exportMenu.hidden) return;
+      if (dom.exportDropdown.contains(event.target)) return;
+      setExportMenu(false);
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape' || !dom.exportMenu || dom.exportMenu.hidden) return;
+      setExportMenu(false);
+      dom.exportMenuBtn?.focus();
+    });
+    window.addEventListener('resize', () => positionExportMenu());
+    window.addEventListener('scroll', () => positionExportMenu(), true);
+
     if (dom.importProject) dom.importProject.addEventListener('click', openImportFileDialog);
     if (dom.importFile) dom.importFile.addEventListener('change', onImportFileChange);
     dom.clearProject.addEventListener('click', openClearDialog);
     dom.clearDialog.addEventListener('close', onClearDialogClose);
+
+    // Кабельный журнал из шапки: переключаемся на вкладку и поднимаем её в вид.
+    if (dom.openJournal) {
+      dom.openJournal.addEventListener('click', () => {
+        switchViewTab('journal');
+        dom.journalView?.scrollIntoView({ block: 'start' });
+      });
+    }
+
+    // Смета проекта.
+    if (dom.openEstimate) dom.openEstimate.addEventListener('click', openEstimate);
+    if (dom.estimateDialog) {
+      dom.estimateDialog.addEventListener('click', (event) => {
+        // Клик по затемнению вне окна закрывает смету.
+        if (event.target === dom.estimateDialog) dom.estimateDialog.close();
+      });
+    }
+    if (dom.estimateClose) {
+      dom.estimateClose.addEventListener('click', () => dom.estimateDialog.close());
+    }
+    if (dom.estimateCloseBottom) {
+      dom.estimateCloseBottom.addEventListener('click', () => dom.estimateDialog.close());
+    }
+    if (dom.estimateDownloadCsv) {
+      dom.estimateDownloadCsv.addEventListener('click', exportEstimateCsv);
+    }
+    if (dom.estimatePrint) dom.estimatePrint.addEventListener('click', printEstimate);
+
+    // Инлайн-редактор цены. Делегирование необходимо, потому что таблица
+    // полностью перерисовывается после каждого сохранения.
+    if (dom.estimateContent) {
+      dom.estimateContent.addEventListener('click', (event) => {
+        const cell = event.target.closest?.('.est-price');
+        if (cell && dom.estimateContent.contains(cell)) startPriceEdit(cell);
+      });
+      dom.estimateContent.addEventListener('keydown', (event) => {
+        const cell = event.target.closest?.('.est-price');
+        if (!cell || event.target !== cell) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          startPriceEdit(cell);
+        }
+      });
+    }
+    // Вкладки рабочей области. Каждый переход в журнал пересобирает таблицу.
+    if (dom.viewTabs) {
+      dom.viewTabs.addEventListener('click', (event) => {
+        const tab = event.target.closest?.('[data-view-tab]');
+        if (tab && dom.viewTabs.contains(tab)) switchViewTab(tab.dataset.viewTab);
+      });
+      dom.viewTabs.addEventListener('keydown', (event) => {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        event.preventDefault();
+        const next = activeTab === 'journal' ? 'schema' : 'journal';
+        switchViewTab(next);
+        (next === 'journal' ? dom.tabJournal : dom.tabSchema)?.focus();
+      });
+    }
+
+    // Кабельный журнал: экспорт и печать.
+    if (dom.journalDownloadCsv) {
+      dom.journalDownloadCsv.addEventListener('click', exportJournalCsv);
+    }
+    if (dom.journalPrint) dom.journalPrint.addEventListener('click', printJournal);
+
+    // Примечания редактируются прямо в таблице. Делегирование необходимо:
+    // tbody пересобирается после каждого изменения проекта.
+    if (dom.journalBody) {
+      dom.journalBody.addEventListener('pointerdown', (event) => {
+        if (event.target.closest?.('.j-note-editable')) event.stopPropagation();
+      });
+      dom.journalBody.addEventListener('click', (event) => {
+        const cell = event.target.closest?.('.j-note-editable');
+        if (!cell || !dom.journalBody.contains(cell)) return;
+        event.stopPropagation();
+        startJournalNoteEdit(cell);
+      });
+      dom.journalBody.addEventListener('keydown', (event) => {
+        const cell = event.target.closest?.('.j-note-editable');
+        // Enter/Пробел открывают редактор только когда фокус на самой ячейке;
+        // клавиши внутри <input> обрабатывает его собственный обработчик.
+        if (!cell || event.target !== cell) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          event.stopPropagation();
+          startJournalNoteEdit(cell);
+        }
+      });
+    }
+
+    // Ctrl+P печатает актуальную таблицу даже без открытой вкладки.
+    window.addEventListener('beforeprint', () => {
+      if (!project) return;
+      document.body.classList.toggle('print-estimate', printContext === 'estimate');
+      if (printContext === 'estimate') renderEstimate();
+      else renderJournal();
+    });
+    window.addEventListener('afterprint', () => {
+      document.body.classList.remove('print-estimate');
+      printContext = 'journal';
+    });
   }
 
   /* ------------------------------- Init ------------------------------- */
 
   function init() {
     installVisualDefs();
-    promoteWireLayer();
+    setupSvgLayerStructure();
     renderLibrary();
     bindEvents();
+    switchViewTab('schema');
     bootProject();
     resetHistory();
 
