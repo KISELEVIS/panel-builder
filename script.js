@@ -718,7 +718,18 @@
     // Контекстное меню (ПКМ) — живёт на уровне body, position: fixed.
     contextMenu: document.getElementById('context-menu'),
     contextMenuHead: document.getElementById('context-menu-head'),
-    contextMenuItems: document.getElementById('context-menu-items')
+    contextMenuItems: document.getElementById('context-menu-items'),
+    // ИИ-помощник (YandexGPT).
+    aiBtn: document.getElementById('ai-assistant-btn'),
+    aiDialog: document.getElementById('ai-dialog'),
+    aiForm: document.getElementById('ai-form'),
+    aiPrompt: document.getElementById('ai-prompt'),
+    aiGenerate: document.getElementById('ai-generate'),
+    aiGenerateLabel: document.getElementById('ai-generate-label'),
+    aiSpinner: document.getElementById('ai-spinner'),
+    aiError: document.getElementById('ai-error'),
+    aiClose: document.getElementById('ai-dialog-close'),
+    aiCancel: document.getElementById('ai-cancel')
   };
 
   /* ------------------------------ State ------------------------------- */
@@ -2830,8 +2841,22 @@
   function setSaveState(state) {
     if (!dom.saveState) return;
     const isError = state === 'error';
+    const message = isError ? 'Не удалось сохранить' : 'Сохранено локально';
     dom.saveState.classList.toggle('is-error', isError);
-    dom.saveText.textContent = isError ? 'Не удалось сохранить' : 'Сохранено локально';
+    dom.saveText.textContent = message;
+    // На ноутбуках подпись статуса скрыта — подсказка остаётся на иконке.
+    dom.saveState.title = message;
+  }
+
+  // На экранах ≤1440 px подписи кнопок шапки (.btn-text) скрываются,
+  // поэтому у каждой такой кнопки должна быть подсказка title.
+  function ensureIconButtonTitles() {
+    document.querySelectorAll('.topbar .btn-text').forEach((label) => {
+      const button = label.closest('button');
+      if (button && !button.getAttribute('title')) {
+        button.title = label.textContent.trim();
+      }
+    });
   }
 
   function announceStorageError() {
@@ -11035,6 +11060,193 @@
     if (open) positionTopbarMenu(entry);
   }
 
+  /* -------------------- ИИ-помощник (YandexGPT) -----------------------
+     Запрос пользователя вместе со списком доступных модулей (id + name из
+     window.ELECTRIC_LIBRARY) отправляется в YandexGPT. Модель возвращает
+     JSON-массив id; найденные в библиотеке модули расставляются в первые
+     свободные слоты ПЕРВОЙ рейки, после чего схема перерисовывается.
+     Сетевые ошибки и невалидный ответ показываются красным текстом в окне.
+  --------------------------------------------------------------------- */
+
+  function aiError(message) {
+    if (!dom.aiError) return;
+    dom.aiError.textContent = message;
+    dom.aiError.hidden = false;
+  }
+
+  function clearAIError() {
+    if (!dom.aiError) return;
+    dom.aiError.textContent = '';
+    dom.aiError.hidden = true;
+  }
+
+  function setAILoading(loading) {
+    if (dom.aiGenerate) dom.aiGenerate.disabled = loading;
+    if (dom.aiPrompt) dom.aiPrompt.disabled = loading;
+    if (dom.aiSpinner) dom.aiSpinner.hidden = !loading;
+    if (dom.aiGenerateLabel) {
+      dom.aiGenerateLabel.textContent = loading ? 'Генерация…' : 'Сгенерировать';
+    }
+  }
+
+  function openAIDialog() {
+    if (!dom.aiDialog || typeof dom.aiDialog.showModal !== 'function') return;
+    clearAIError();
+    setAILoading(false);
+    if (dom.aiPrompt) dom.aiPrompt.value = '';
+    dom.aiDialog.showModal();
+    dom.aiPrompt?.focus();
+  }
+
+  function pluralModules(count) {
+    const mod10 = count % 10;
+    const mod100 = count % 100;
+    if (mod10 === 1 && mod100 !== 11) return 'модуль';
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'модуля';
+    return 'модулей';
+  }
+
+  // Модель иногда оборачивает JSON в ```json … ``` или добавляет текст после
+  // массива. Вытаскиваем содержимое между [ и ], пробуем жадный и ленивый
+  // варианты — первый валидный JSON-массив и считаем ответом.
+  function extractAIJsonIds(text) {
+    const source = String(text || '');
+    const matches = [
+      source.match(/\[[\s\S]*\]/),
+      source.match(/\[[\s\S]*?\]/)
+    ];
+    for (const match of matches) {
+      if (!match) continue;
+      try {
+        const parsed = JSON.parse(match[0]);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (error) {
+        // Пробуем следующий вариант извлечения.
+      }
+    }
+    throw new Error('Ответ ИИ не содержит валидного JSON-массива.');
+  }
+
+  // Раскладка в первые свободные слоты первой рейки. Все модули добавляются
+  // одним действием: одна запись в историю, одна перерисовка схемы.
+  function placeAIModules(ids) {
+    const rail = project && Array.isArray(project.rails) ? project.rails[0] : null;
+    const placedIds = [];
+    const unknownIds = [];
+    const noRoomIds = [];
+
+    if (!rail) return { placedIds, unknownIds, noRoomIds };
+
+    ids.forEach((id) => {
+      const libraryItem = LIBRARY_BY_ID.get(id);
+      if (!libraryItem) {
+        unknownIds.push(id);
+        return;
+      }
+      const slot = findFreeSlot(rail, libraryItem.width);
+      if (slot === null || !canPlaceModule(rail, slot, libraryItem.width)) {
+        noRoomIds.push(id);
+        return;
+      }
+      const module = createModuleFromLibrary(libraryItem);
+      module.slot = slot;
+      rail.modules.push(module);
+      placedIds.push(id);
+    });
+
+    if (placedIds.length > 0) {
+      normalizeSlots();
+      persistProject();
+      commitHistory();
+      renderAll();
+    }
+    return { placedIds, unknownIds, noRoomIds };
+  }
+
+  async function generateAIModules() {
+    if (!dom.aiDialog || dom.aiGenerate?.disabled) return;
+    clearAIError();
+
+    const userPrompt = dom.aiPrompt ? dom.aiPrompt.value.trim() : '';
+    if (!userPrompt) {
+      aiError('Введите описание щита, например: «3 автомата C16 и одно УЗО».');
+      return;
+    }
+
+    // В промпт попадают только id и name — как того требует формат ответа.
+    const availableModules = (Array.isArray(window.ELECTRIC_LIBRARY) ? window.ELECTRIC_LIBRARY : [])
+      .filter((item) => item && typeof item.id === 'string' && typeof item.name === 'string')
+      .map((item) => ({ id: item.id, name: item.name }));
+    if (availableModules.length === 0) {
+      aiError('Библиотека модулей пуста — проверьте library.js.');
+      return;
+    }
+
+    const systemPrompt = 'Ты — опытный инженер-электрик. Выбери подходящие модули из списка для сборки щита по запросу пользователя. Верни ТОЛЬКО валидный JSON-массив строк с id выбранных модулей. Никакого текста до или после JSON. Список модулей: ' + JSON.stringify(availableModules);
+
+    setAILoading(true);
+    try {
+      const response = await fetch('https://llm.api.cloud.yandex.net/foundationModels/v1/completion', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Api-Key AQVNxACjqFGr5gLxQnJ49_P5StGzR6JLIfj37Y_i'
+        },
+        body: JSON.stringify({
+          modelUri: 'gpt://b1g3eahi290datd46v06/yandexgpt-lite/latest',
+          completionOptions: { stream: false, temperature: 0.1, maxTokens: 2000 },
+          messages: [
+            { role: 'system', text: systemPrompt },
+            { role: 'user', text: userPrompt }
+          ]
+        })
+      });
+
+      if (!response.ok) {
+        let detail = '';
+        try {
+          const errorBody = await response.json();
+          detail = errorBody?.message || errorBody?.error?.message || '';
+        } catch (parseError) {
+          // Тело ответа может быть не JSON — показываем только статус.
+        }
+        throw new Error(
+          `Сервис YandexGPT вернул ошибку ${response.status}${detail ? ': ' + detail : ''}`
+        );
+      }
+
+      const result = await response.json();
+      const text = result?.result?.alternatives?.[0]?.message?.text;
+      if (!text) throw new Error('Пустой ответ от YandexGPT.');
+
+      const ids = extractAIJsonIds(text)
+        .filter((id) => typeof id === 'string')
+        .map((id) => id.trim())
+        .filter(Boolean);
+      if (ids.length === 0) throw new Error('ИИ не выбрал ни одного модуля.');
+
+      const { placedIds, unknownIds, noRoomIds } = placeAIModules(ids);
+      if (placedIds.length === 0) {
+        throw new Error(
+          noRoomIds.length > 0
+            ? 'Не хватило свободных слотов на первой рейке.'
+            : 'ИИ вернул id, которых нет в библиотеке модулей.'
+        );
+      }
+
+      dom.aiDialog.close();
+      const skipped = unknownIds.length + noRoomIds.length;
+      const message = `ИИ добавил ${placedIds.length} ${pluralModules(placedIds.length)} на рейку`;
+      showToast(skipped > 0 ? `${message}. Пропущено: ${skipped}` : message,
+        skipped > 0 ? 'error' : 'success', 3600);
+    } catch (error) {
+      console.error('[Щит.Студия] Ошибка ИИ-помощника:', error);
+      aiError('Не удалось сгенерировать сборку: ' + (error?.message || 'сетевая ошибка'));
+    } finally {
+      setAILoading(false);
+    }
+  }
+
   /* ----------------------------- Bindings ----------------------------- */
 
   function bindEvents() {
@@ -11050,6 +11262,25 @@
       }
     });
     dom.librarySearchClear.addEventListener('click', clearLibrarySearch);
+
+    // ИИ-помощник: открытие окна, закрытие и отправка запроса.
+    if (dom.aiBtn) dom.aiBtn.addEventListener('click', openAIDialog);
+    if (dom.aiClose) dom.aiClose.addEventListener('click', () => dom.aiDialog?.close());
+    if (dom.aiCancel) dom.aiCancel.addEventListener('click', () => dom.aiDialog?.close());
+    if (dom.aiForm) {
+      dom.aiForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        generateAIModules();
+      });
+    }
+    if (dom.aiPrompt) {
+      dom.aiPrompt.addEventListener('keydown', (event) => {
+        if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+          event.preventDefault();
+          generateAIModules();
+        }
+      });
+    }
 
     // Capture на обёртке: панорамирование (Пробел + ЛКМ) перехватывает жест
     // раньше обработчиков модулей/портов на самом SVG.
@@ -11614,6 +11845,7 @@
     setupSvgLayerStructure();
     renderLibrary();
     bindEvents();
+    ensureIconButtonTitles();
     switchViewTab('schema');
     bootProject();
     resetHistory();

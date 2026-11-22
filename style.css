@@ -5517,6 +5517,133 @@ body.is-dragging * {
 
 /* ---------- Responsive ---------- */
 
+/* Ноутбуки 1280–1440 px: шапка остаётся строго в одну строку.
+   Второстепенные подписи прячем, оставляя иконки с подсказкой title. */
+@media (max-width: 1440px) {
+  .topbar-inner {
+    gap: 8px;
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .topbar-zone,
+  .topbar-left,
+  .topbar-tools,
+  .group-actions {
+    gap: 6px;
+  }
+
+  /* Ничего не переносится и не сжимается «в кашу». */
+  .topbar-inner,
+  .topbar-zone,
+  .topbar-tools {
+    flex-wrap: nowrap;
+  }
+
+  .topbar .btn,
+  .topbar .sim-toggle {
+    height: 30px;
+    min-height: 30px;
+    flex-shrink: 0;
+  }
+
+  .topbar .btn {
+    gap: 5px;
+    padding: 0 7px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  /* Кнопки, у которых спрятан текст, становятся квадратными иконками. */
+  .topbar .btn.icon-btn,
+  .topbar .topbar-menu-trigger,
+  .topbar .auth-login,
+  .topbar .auth-logout {
+    width: 30px;
+    padding: 0;
+    gap: 0;
+    flex-shrink: 0;
+  }
+
+  .topbar .btn-icon {
+    width: 15px;
+    height: 15px;
+  }
+
+  /* Главный шаг: текст второстепенных кнопок скрыт, остаются иконки
+     с подсказками title (у всех таких кнопок она есть в разметке). */
+  .btn-text {
+    display: none;
+  }
+
+  .topbar-menu-chevron {
+    display: none;
+  }
+
+  .topbar-separator {
+    height: 18px;
+  }
+
+  /* Название проекта не растягивается на пол-шапки. */
+  .project-block,
+  .project-line {
+    gap: 8px;
+  }
+
+  .topbar .project-input {
+    flex: 0 1 140px;
+    width: 140px;
+    min-width: 0;
+    max-width: 140px;
+    height: 30px;
+    font-size: 12px;
+  }
+
+  .brand-title {
+    font-size: 13px;
+  }
+
+  .brand-subtitle {
+    font-size: 8.5px;
+  }
+
+  /* Email и подписи тумблеров освобождают место в правой зоне. */
+  .auth-email {
+    display: none;
+  }
+
+  .auth-block {
+    padding-left: 8px;
+  }
+
+  .sim-toggle {
+    gap: 4px;
+    padding: 0 6px;
+  }
+
+  .sim-toggle-track {
+    width: 26px;
+    height: 14px;
+  }
+
+  .sim-toggle-thumb {
+    width: 10px;
+    height: 10px;
+  }
+
+  .sim-toggle-input:checked + .sim-toggle-track .sim-toggle-thumb {
+    transform: translateX(12px);
+  }
+
+  .sim-toggle-copy {
+    gap: 0;
+  }
+
+  .sim-toggle-title {
+    font-size: 10px;
+  }
+}
+
 @media (max-width: 1300px) {
   .layout {
     grid-template-columns: 286px minmax(0, 1fr);
@@ -5533,7 +5660,7 @@ body.is-dragging * {
   .topbar-zone,
   .topbar-left,
   .topbar-tools {
-    gap: 8px;
+    gap: 6px;
   }
 
   .brand-subtitle,
@@ -8542,4 +8669,186 @@ body.is-marking-tab .library-panel {
     color: #333;
     font-size: 10pt;
   }
+}
+
+/* =========================================================
+   ИИ-Помощник (YandexGPT): кнопка в шапке и модальное окно
+   ========================================================= */
+
+/* Кнопка в шапке выделяется среди серых инструментов акцентным градиентом.
+   На экранах <=1440 px общий класс .btn-text прячет подпись — остаётся
+   иконка с подсказкой title (как у остальных кнопок шапки). */
+.btn-ai {
+  border-color: var(--accent);
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
+  color: var(--on-solid);
+  box-shadow: 0 4px 14px var(--brand-shadow);
+}
+
+.btn-ai:hover:not(:disabled) {
+  border-color: var(--accent-text);
+  background: linear-gradient(135deg, var(--accent-strong) 0%, var(--accent) 100%);
+  color: var(--on-solid);
+}
+
+.ai-dialog {
+  width: min(540px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-modal);
+}
+
+.ai-dialog::backdrop {
+  background: var(--backdrop);
+  backdrop-filter: blur(3px);
+}
+
+.ai-dialog[open] {
+  animation: dialog-in 0.16s ease both;
+}
+
+.ai-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+  padding: 22px 22px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ai-dialog-head .dialog-icon {
+  flex: 0 0 auto;
+  margin-bottom: 0;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.ai-dialog-title-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ai-dialog h2 {
+  margin: 0 0 5px;
+  font-size: 19px;
+}
+
+.ai-dialog-head p {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.ai-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 22px 22px;
+}
+
+.ai-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.ai-field > span {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.ai-field textarea {
+  width: 100%;
+  min-height: 126px;
+  max-height: 40vh;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--field-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ai-field textarea::placeholder {
+  color: var(--text-faint);
+  opacity: 1;
+}
+
+.ai-field textarea:hover:not(:disabled) {
+  background: var(--field-hover);
+}
+
+.ai-field textarea:focus {
+  border-color: var(--accent-line);
+  outline: none;
+  background: var(--surface-2);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.ai-field textarea:disabled {
+  opacity: 0.6;
+}
+
+.ai-hint {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.ai-error {
+  margin: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--danger-line);
+  border-radius: 9px;
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.ai-dialog .dialog-actions {
+  margin-top: 6px;
+}
+
+.btn-ai-generate {
+  min-width: 148px;
+  border-color: var(--accent);
+  background: var(--accent-strong);
+  color: var(--on-solid);
+}
+
+.btn-ai-generate:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-solid);
+}
+
+.ai-spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: var(--on-solid);
+  border-radius: 50%;
+  animation: ai-spin 0.7s linear infinite;
+}
+
+@keyframes ai-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-spinner { animation-duration: 1.6s; }
 }
