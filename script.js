@@ -14,6 +14,26 @@
 (() => {
   'use strict';
 
+  /* ----------------------- Облако (Supabase) ---------------------------
+     Клиент создаётся один раз при запуске. Если CDN не загрузился (нет
+     интернета) или ключи недействительны, приложение продолжает работать
+     локально: ошибка выводится в консоль и в тост при попытке сохранить
+     или загрузить проект. */
+  const supabaseUrl = 'https://sqtmnjxauskzyfnvfcpx.supabase.co';
+  const supabaseKey = 'sb_publishable_R3a6uqxbP9rQAaJrcnyqXA_A00D0U0O';
+  let supabase = null;
+
+  try {
+    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+      throw new Error('Библиотека @supabase/supabase-js не загружена');
+    }
+    // window.supabase — глобал из CDN; локальная переменная намеренно
+    // называется так же, но читается через window, чтобы не попасть в TDZ.
+    supabase = window.supabase.createClient(supabaseUrl, supabaseKey);
+  } catch (error) {
+    console.error('[Щит.Студия] Не удалось инициализировать Supabase:', error);
+  }
+
   /* ----------------------------- Constants ----------------------------- */
 
   // Ключ намеренно остаётся прежним: так старые проекты находятся и мигрируют.
@@ -510,6 +530,9 @@
     exportCsvSecondary: document.getElementById('export-csv-secondary'),
     exportPng: document.getElementById('export-png'),
     downloadProject: document.getElementById('download-project'),
+    documentsDropdown: document.getElementById('documents-dropdown'),
+    documentsMenuBtn: document.getElementById('documents-menu-btn'),
+    documentsMenu: document.getElementById('documents-menu'),
     exportDropdown: document.getElementById('export-dropdown'),
     exportMenuBtn: document.getElementById('export-menu-btn'),
     exportMenu: document.getElementById('export-menu'),
@@ -594,6 +617,9 @@
     estimateDownloadCsv: document.getElementById('estimate-download-csv'),
     estimatePrint: document.getElementById('estimate-print'),
     estimatePrintSheet: document.getElementById('estimate-print-sheet'),
+    // Полный печатный документ «Весь проект в PDF».
+    fullPdfBtn: document.getElementById('full-project-pdf'),
+    fullPrintView: document.getElementById('full-print-view'),
     // Вкладки рабочей области и кабельный журнал.
     viewTabs: document.getElementById('view-tabs'),
     tabSchema: document.getElementById('tab-schema'),
@@ -665,6 +691,13 @@
     markingGroup: document.getElementById('marking-group'),
     markingDelete: document.getElementById('marking-delete'),
     toastRegion: document.getElementById('toast-region'),
+    // Облачные проекты (Supabase): кнопки в шапке и диалог выбора.
+    cloudSave: document.getElementById('cloud-save'),
+    cloudLoad: document.getElementById('cloud-load'),
+    cloudDialog: document.getElementById('cloud-dialog'),
+    cloudDialogList: document.getElementById('cloud-project-list'),
+    cloudDialogClose: document.getElementById('cloud-dialog-close'),
+    cloudDialogCancel: document.getElementById('cloud-dialog-cancel'),
     // Контекстное меню (ПКМ) — живёт на уровне body, position: fixed.
     contextMenu: document.getElementById('context-menu'),
     contextMenuHead: document.getElementById('context-menu-head'),
@@ -7490,10 +7523,10 @@
 
   /* ------------------------ Project file (JSON) ----------------------- */
 
-  // Экспорт: собираем всё актуальное состояние (рейки, модули, провода,
-  // настройки) в один объект вместе с версией схемы и скачиваем как JSON.
-  function exportProject() {
-    const data = {
+  // Актуальное состояние проекта в формате JSON-экспорта. Используется
+  // и для скачивания файла, и для записи в облако, чтобы форматы совпадали.
+  function buildProjectState() {
+    return {
       schemaVersion: SCHEMA_VERSION,
       project: {
         ...project,
@@ -7508,7 +7541,12 @@
         layerSettings: normalizeLayerSettings(project.layerSettings)
       }
     };
-    const json = JSON.stringify(data, null, 2);
+  }
+
+  // Экспорт: собираем всё актуальное состояние (рейки, модули, провода,
+  // настройки) в один объект вместе с версией схемы и скачиваем как JSON.
+  function exportProject() {
+    const json = JSON.stringify(buildProjectState(), null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     downloadBlob(blob, 'panel-project.json');
     showToast('Проект сохранён в файл panel-project.json', 'success', 3000);
@@ -7598,6 +7636,166 @@
       showToast('Неверный формат файла', 'error', 3500);
     };
     reader.readAsText(file, 'utf-8');
+  }
+
+  /* --------------------- Проекты в облаке (Supabase) ------------------- */
+
+  const CLOUD_CONNECTION_ERROR = 'Ошибка подключения к облаку';
+
+  function setCloudBusy(busy) {
+    [dom.cloudSave, dom.cloudLoad].forEach((button) => {
+      if (button) button.disabled = busy;
+    });
+  }
+
+  function reportCloudError(context, error, message = CLOUD_CONNECTION_ERROR) {
+    console.error(`[Щит.Студия] ${context}:`, error);
+    showToast(message, 'error', 3500);
+  }
+
+  function formatCloudDate(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return 'дата неизвестна';
+    return new Intl.DateTimeFormat('ru-RU', {
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    }).format(date);
+  }
+
+  // Сохранение текущего проекта в таблицу projects.
+  async function saveProjectToCloud() {
+    if (!project) return;
+    if (!supabase) {
+      reportCloudError('Supabase не инициализирован', new Error('Нет подключения к Supabase'));
+      return;
+    }
+
+    const suggested = String(dom.projectName?.value || project.name || '').trim() || 'Новый щит';
+    const answer = window.prompt('Имя проекта для сохранения в облако:', suggested);
+    if (answer === null) return; // пользователь отменил ввод
+
+    const projectName = answer.trim().slice(0, 60) || suggested;
+    // Введённое имя становится текущим — в шапке и в локальном проекте.
+    project.name = projectName;
+    if (dom.projectName) dom.projectName.value = projectName;
+    persistProject();
+    updateDocumentTitle();
+
+    setCloudBusy(true);
+    try {
+      const { error } = await supabase
+        .from('projects')
+        .insert([{ name: projectName, data: buildProjectState() }]);
+      if (error) throw error;
+      showToast('Проект сохранен в облако!', 'success', 3200);
+    } catch (error) {
+      reportCloudError('Ошибка сохранения проекта в Supabase', error);
+    } finally {
+      setCloudBusy(false);
+    }
+  }
+
+  // Преобразование строки облака в объект проекта (поддерживаем как наш
+  // формат { schemaVersion, project }, так и «голый» объект с массивом rails).
+  function cloudRowToProject(row) {
+    let payload = row && typeof row === 'object' ? row.data : null;
+    if (typeof payload === 'string') {
+      payload = JSON.parse(payload);
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+    const candidate = payload.project && typeof payload.project === 'object'
+      ? payload.project
+      : payload;
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate) ||
+        !Array.isArray(candidate.rails)) {
+      return null;
+    }
+    return candidate;
+  }
+
+  // Применение выбранного облачного проекта к текущему состоянию приложения.
+  // applyImportedProject() делает валидацию, перерисовку всех слоёв, сброс
+  // истории Undo/Redo и сохранение в localStorage — тот же путь, что и импорт.
+  function loadProjectFromCloud(row) {
+    let candidate = null;
+    try {
+      candidate = cloudRowToProject(row);
+    } catch (error) {
+      reportCloudError('Не удалось прочитать данные проекта из облака', error);
+      return;
+    }
+
+    if (!candidate) {
+      reportCloudError('Некорректные данные проекта из облака',
+        new Error('В записи нет корректного объекта проекта'));
+      return;
+    }
+
+    if (applyImportedProject(candidate)) {
+      if (dom.cloudDialog?.open) dom.cloudDialog.close();
+      showToast('Проект загружен!', 'success', 3000);
+    } else {
+      reportCloudError('Не удалось применить проект из облака',
+        new Error('normalizeProject() вернул null'));
+    }
+  }
+
+  function renderCloudProjectList(rows) {
+    if (!dom.cloudDialogList) return;
+    dom.cloudDialogList.replaceChildren();
+
+    if (!rows.length) {
+      const empty = document.createElement('p');
+      empty.className = 'cloud-project-empty';
+      empty.textContent = 'В облаке пока нет сохранённых проектов.';
+      dom.cloudDialogList.appendChild(empty);
+      return;
+    }
+
+    rows.forEach((row) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'cloud-project-item';
+      item.setAttribute('role', 'option');
+
+      const title = document.createElement('strong');
+      title.textContent = safeText(row.name, 'Без названия', 60) || 'Без названия';
+      const meta = document.createElement('span');
+      meta.textContent = formatCloudDate(row.updated_at || row.created_at);
+
+      item.append(title, meta);
+      item.addEventListener('click', () => loadProjectFromCloud(row));
+      dom.cloudDialogList.appendChild(item);
+    });
+  }
+
+  // Загрузка списка проектов и открытие диалога выбора.
+  async function openCloudProjectDialog() {
+    if (!supabase) {
+      reportCloudError('Supabase не инициализирован', new Error('Нет подключения к Supabase'));
+      return;
+    }
+
+    setCloudBusy(true);
+    try {
+      const { data, error } = await supabase
+        .from('projects')
+        .select('*')
+        .order('updated_at', { ascending: false });
+      if (error) throw error;
+
+      renderCloudProjectList(Array.isArray(data) ? data : []);
+      if (!dom.cloudDialog) return;
+      if (typeof dom.cloudDialog.showModal === 'function') {
+        dom.cloudDialog.showModal();
+      } else {
+        dom.cloudDialog.setAttribute('open', '');
+      }
+    } catch (error) {
+      reportCloudError('Ошибка загрузки списка проектов из Supabase', error);
+    } finally {
+      setCloudBusy(false);
+    }
   }
 
   /* ------------------------------- CSV -------------------------------- */
@@ -10044,6 +10242,108 @@
     window.print();
   }
 
+  /* ------------------- Весь проект в один документ --------------------
+     Собирает титульный блок, клон схемы, смету, кабельный журнал и печатный
+     лист маркировки в один контейнер. Разделы идут с новой страницы
+     (break-before: page), схема — на первой вместе с титулом.
+     =================================================================== */
+
+  function buildFullPrintView() {
+    if (!project || !dom.fullPrintView) return false;
+
+    // Все источники пересобираются из текущего проекта: в документ должны
+    // попасть актуальные цены, длины проводов и правки наклеек.
+    renderEstimate();
+    renderJournal();
+    renderMarking();
+
+    const projectTitle = project.name || 'Новый щит';
+    const today = new Date().toLocaleDateString('ru-RU');
+    const estimate = buildEstimate();
+    const journal = buildJournal();
+    const scheme = cloneCanvasForPrint();
+    const logoSvg = document.querySelector('.brand-mark svg');
+    const moduleCount = allModules().length;
+    const meta = [
+      `Рейки: ${project.rails.length}`,
+      `Модули: ${moduleCount}`,
+      `Соединения: ${project.connections.length}`,
+      `Смета: ${formatMoney(estimate.total)} руб.`
+    ].join(' · ');
+    const markingHtml = dom.markingPrintSheet?.innerHTML || '';
+
+    dom.fullPrintView.innerHTML = `
+      <header class="fp-titleblock">
+        <div class="fp-logo">${logoSvg ? logoSvg.outerHTML : ''}</div>
+        <div class="fp-title-copy">
+          <p class="fp-kicker">Щит.Студия · проектная документация</p>
+          <h1>${escapeHtml(projectTitle)}</h1>
+          <p class="fp-title-meta">Дата: ${escapeHtml(today)} · ${escapeHtml(meta)}</p>
+          <p class="fp-title-meta">Разделы: схема щита · смета · кабельный журнал · маркировка (наклейки 1:1)</p>
+        </div>
+      </header>
+
+      <section class="fp-section fp-scheme" aria-label="Схема щита">
+        <h2>1. Схема щита</h2>
+        ${scheme
+          ? '<p class="fp-subtitle">Схема сборки с модулями и соединениями</p>'
+          : '<p class="fp-empty">Не удалось подготовить изображение схемы.</p>'}
+      </section>
+
+      <section class="fp-section fp-estimate" aria-label="Смета проекта">
+        <h2>2. Смета проекта</h2>
+        <p class="fp-subtitle">${escapeHtml(projectTitle)} · ${escapeHtml(today)}</p>
+        ${estimate.hasModules
+          ? estimateTableHtml(estimate.rows, estimate.total)
+          : '<p class="fp-empty">Проект пуст. Добавьте модули для расчёта сметы.</p>'}
+      </section>
+
+      <section class="fp-section fp-journal" aria-label="Кабельный журнал">
+        <h2>3. Кабельный журнал</h2>
+        <p class="fp-subtitle">${escapeHtml(projectTitle)} · ${escapeHtml(today)} · ${journal.rows.length} ${plural(journal.rows.length, ['провод', 'провода', 'проводов'])} · ${formatCableLength(journal.totalLength)}</p>
+        ${journalTableHtml(journal.rows, journal.totalLength)}
+      </section>
+
+      <section class="fp-section fp-marking" aria-label="Маркировка">
+        <div class="marking-print-sheet">${markingHtml}</div>
+      </section>`;
+
+    if (scheme) dom.fullPrintView.querySelector('.fp-scheme').appendChild(scheme);
+    // Таблицы приходят из общих функций сметы/журнала: добавляем общий класс,
+    // под который написаны печатные стили полного документа.
+    dom.fullPrintView.querySelectorAll('.fp-estimate table, .fp-journal table')
+      .forEach((table) => table.classList.add('fp-table'));
+    dom.fullPrintView.setAttribute('aria-hidden', 'false');
+    return true;
+  }
+
+  function printFullProject() {
+    if (!project) {
+      showToast('Сначала создайте проект.', 'error', 2600);
+      return;
+    }
+    if (!buildFullPrintView()) {
+      showToast('Не удалось собрать печатный документ.', 'error', 3200);
+      return;
+    }
+
+    printContext = 'full';
+    // print-marking включается для переиспользования готовых стилей
+    // печатного листа наклеек 1:1; print-full скрывает весь остальной UI.
+    document.body.classList.add('print-full', 'print-marking');
+    document.body.classList.remove('print-estimate', 'print-tape');
+    updateMarkingPageStyle('marking');
+    window.print();
+  }
+
+  function clearFullPrintView() {
+    document.body.classList.remove('print-full');
+    if (dom.fullPrintView) {
+      dom.fullPrintView.replaceChildren();
+      dom.fullPrintView.setAttribute('aria-hidden', 'true');
+    }
+  }
+
   /* ------------------------------ PNG --------------------------------- */
 
   // Свойства, которые реально влияют на внешний вид SVG. Переносим их
@@ -10195,6 +10495,97 @@
     return new XMLSerializer().serializeToString(clone);
   }
 
+  /* ---------- Клон холста для полного печатного документа ----------
+     Клон остаётся в том же HTML-документе, поэтому простого копирования
+     недостаточно: ссылки url(#gradient) будут ссылаться на скрытый
+     оригинал. Переименовываем ID в клоне и все ссылки на них, а ссылки,
+     заданные CSS-правилами, переносим в инлайн-стили клона. */
+
+  const PRINT_DEF_PREFIX = 'fp-print-';
+
+  function rewritePrintRefs(value, attributeName) {
+    let result = String(value);
+    if (/^(href|xlink:href)$/i.test(attributeName || '') && result.startsWith('#')) {
+      return `#${PRINT_DEF_PREFIX}${result.slice(1)}`;
+    }
+    return result.replace(/url\((['"]?)#([^)'"]+)\1\)/g,
+      (_match, quote, id) => `url(${quote}#${PRINT_DEF_PREFIX}${id}${quote})`);
+  }
+
+  function cloneCanvasForPrint() {
+    if (!dom.canvas) return null;
+    try {
+      const { width, height } = baseCanvasSize();
+      const bounds = exportBounds(width, height);
+      const source = dom.canvas;
+      const clone = source.cloneNode(true);
+
+      // IDdefs становятся уникальными, чтобы градиенты и фильтры клона
+      // не подменялись одноимёнными из скрытого оригинального SVG.
+      clone.querySelectorAll('[id]').forEach((element) => {
+        element.setAttribute('id', PRINT_DEF_PREFIX + element.getAttribute('id'));
+      });
+
+      // Прямые ссылки в атрибутах: fill="url(#rail-holes)", filter, href и т.д.
+      clone.querySelectorAll('*').forEach((element) => {
+        for (const attribute of Array.from(element.attributes)) {
+          const next = rewritePrintRefs(attribute.value, attribute.name);
+          if (next !== attribute.value) element.setAttribute(attribute.name, next);
+        }
+      });
+
+      // Ссылки из CSS-правил (.canvas-surface, .busbar-body--n и др.):
+      // getComputedStyle возвращает абсолютный URL, поэтому сначала
+      // локализуем его, затем переименовываем ID.
+      const sourceElements = [source, ...source.querySelectorAll('*')];
+      const cloneElements = [clone, ...clone.querySelectorAll('*')];
+      sourceElements.forEach((element, index) => {
+        const target = cloneElements[index];
+        if (!target) return;
+        const computed = window.getComputedStyle(element);
+        for (const property of ['fill', 'stroke', 'filter', 'flood-color']) {
+          const value = computed.getPropertyValue(property);
+          if (!value.includes('url(')) continue;
+          const local = localSvgUrl(value);
+          if (!local.includes('url(#')) continue;
+          target.style.setProperty(property, rewritePrintRefs(local));
+        }
+      });
+
+      // Служебные элементы интерфейса в печатную схему не попадают.
+      clone.querySelectorAll([
+        '#canvas-hit-area',
+        '#selection-box',
+        '.wire-preview',
+        '.port',
+        '[data-delete-module]',
+        '[data-delete-wire]',
+        '[data-delete-rail]',
+        '[data-rail-capacity]',
+        '.rail-cap-control',
+        '.wire-halo',
+        '.module-focus-ring',
+        '.module-pending-badge',
+        '.rail-overflow-outline',
+        '.rail-slot-highlight',
+        '.note-delete'
+      ].join(', ')).forEach((element) => element.remove());
+
+      clone.removeAttribute('id');
+      clone.setAttribute('class', `${clone.getAttribute('class') || ''} fp-scheme-svg`.trim());
+      clone.setAttribute('viewBox', `${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}`);
+      clone.setAttribute('width', String(bounds.width));
+      clone.setAttribute('height', String(bounds.height));
+      clone.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+      clone.setAttribute('role', 'img');
+      clone.setAttribute('aria-label', `Схема щита: ${project?.name || 'Новый щит'}`);
+      return clone;
+    } catch (error) {
+      console.error('Full print: failed to clone canvas', error);
+      return null;
+    }
+  }
+
   function exportPng() {
     let markup;
     let bounds;
@@ -10317,27 +10708,38 @@
     updateDocumentTitle();
   }
 
-  /* --------------------- Меню «Экспорт» в шапке --------------------- */
+  /* ----------------- Выпадающие меню «Документы» и «Файл» ----------------- */
 
-  // Меню позиционируется относительно кнопки, но само имеет position: fixed:
-  // так его не обрезает горизонтальная прокрутка шапки на узких экранах.
-  function positionExportMenu() {
-    if (!dom.exportMenu || dom.exportMenu.hidden) return;
-    const triggerRect = dom.exportMenuBtn.getBoundingClientRect();
-    const menuWidth = dom.exportMenu.offsetWidth;
+  // Меню позиционируются от своих кнопок, но сами имеют position: fixed:
+  // так они перекрывают контент снизу и не растягивают шапку.
+  const topbarMenus = [
+    { dropdown: dom.documentsDropdown, trigger: dom.documentsMenuBtn, menu: dom.documentsMenu },
+    { dropdown: dom.exportDropdown, trigger: dom.exportMenuBtn, menu: dom.exportMenu }
+  ];
+
+  function positionTopbarMenu(entry) {
+    if (!entry?.menu || entry.menu.hidden || !entry.trigger) return;
+    const triggerRect = entry.trigger.getBoundingClientRect();
+    const menuWidth = entry.menu.offsetWidth;
     const left = Math.min(
       Math.max(8, triggerRect.right - menuWidth),
       Math.max(8, window.innerWidth - menuWidth - 8)
     );
-    dom.exportMenu.style.top = `${triggerRect.bottom + 8}px`;
-    dom.exportMenu.style.left = `${left}px`;
+    entry.menu.style.top = `${triggerRect.bottom + 8}px`;
+    entry.menu.style.left = `${left}px`;
   }
 
-  function setExportMenu(open) {
-    if (!dom.exportMenu || !dom.exportMenuBtn) return;
-    dom.exportMenu.hidden = !open;
-    dom.exportMenuBtn.setAttribute('aria-expanded', String(open));
-    if (open) positionExportMenu();
+  function setTopbarMenu(entry, open) {
+    if (!entry?.menu || !entry.trigger) return;
+    // Одновременно открыто только одно меню.
+    topbarMenus.forEach((other) => {
+      if (other === entry) return;
+      if (other.menu) other.menu.hidden = true;
+      other.trigger?.setAttribute('aria-expanded', 'false');
+    });
+    entry.menu.hidden = !open;
+    entry.trigger.setAttribute('aria-expanded', String(open));
+    if (open) positionTopbarMenu(entry);
   }
 
   /* ----------------------------- Bindings ----------------------------- */
@@ -10515,38 +10917,58 @@
     dom.exportCsv.addEventListener('click', exportCsv);
     dom.exportCsvSecondary.addEventListener('click', exportCsv);
     dom.exportPng.addEventListener('click', exportPng);
+    if (dom.fullPdfBtn) dom.fullPdfBtn.addEventListener('click', printFullProject);
     if (dom.downloadProject) dom.downloadProject.addEventListener('click', exportProject);
 
-    // Выпадающее меню «Экспорт»: открытие/закрытие по клику, закрытие кликом
-    // вне области и по Escape. При скролле/изменении размера меню не закрывается,
-    // а пересчитывает позицию under кнопкой (в том числе при горизонтальной
-    // прокрутке шапки).
-    if (dom.exportMenuBtn) {
-      dom.exportMenuBtn.addEventListener('click', (event) => {
+    // Выпадающие меню шапки: открытие по клику, закрытие по клику на пункт,
+    // кликом вне меню и по Escape. При скролле/ресайзе позиция пересчитывается.
+    topbarMenus.forEach((entry) => {
+      if (!entry.trigger || !entry.menu) return;
+      entry.trigger.addEventListener('click', (event) => {
         event.stopPropagation();
-        setExportMenu(dom.exportMenu.hidden);
+        setTopbarMenu(entry, entry.menu.hidden);
       });
-    }
-    if (dom.exportDropdown) {
-      dom.exportDropdown.addEventListener('click', (event) => {
-        if (event.target.closest?.('.export-menu-item')) setExportMenu(false);
-      });
-    }
+      if (entry.dropdown) {
+        entry.dropdown.addEventListener('click', (event) => {
+          if (event.target.closest?.('.topbar-menu-item')) setTopbarMenu(entry, false);
+        });
+      }
+    });
     document.addEventListener('click', (event) => {
-      if (!dom.exportMenu || dom.exportMenu.hidden) return;
-      if (dom.exportDropdown.contains(event.target)) return;
-      setExportMenu(false);
+      topbarMenus.forEach((entry) => {
+        if (!entry.menu || entry.menu.hidden) return;
+        if (entry.dropdown?.contains(event.target)) return;
+        setTopbarMenu(entry, false);
+      });
     });
     document.addEventListener('keydown', (event) => {
-      if (event.key !== 'Escape' || !dom.exportMenu || dom.exportMenu.hidden) return;
-      setExportMenu(false);
-      dom.exportMenuBtn?.focus();
+      if (event.key !== 'Escape') return;
+      const openMenu = topbarMenus.find((entry) => entry.menu && !entry.menu.hidden);
+      if (!openMenu) return;
+      setTopbarMenu(openMenu, false);
+      openMenu.trigger?.focus();
     });
-    window.addEventListener('resize', () => positionExportMenu());
-    window.addEventListener('scroll', () => positionExportMenu(), true);
+    window.addEventListener('resize', () => topbarMenus.forEach((entry) => positionTopbarMenu(entry)));
+    window.addEventListener('scroll', () => topbarMenus.forEach((entry) => positionTopbarMenu(entry)), true);
 
     if (dom.importProject) dom.importProject.addEventListener('click', openImportFileDialog);
     if (dom.importFile) dom.importFile.addEventListener('change', onImportFileChange);
+
+    // Облачные проекты: сохранение, загрузка и диалог выбора.
+    if (dom.cloudSave) dom.cloudSave.addEventListener('click', saveProjectToCloud);
+    if (dom.cloudLoad) dom.cloudLoad.addEventListener('click', openCloudProjectDialog);
+    if (dom.cloudDialogClose) {
+      dom.cloudDialogClose.addEventListener('click', () => dom.cloudDialog.close());
+    }
+    if (dom.cloudDialogCancel) {
+      dom.cloudDialogCancel.addEventListener('click', () => dom.cloudDialog.close());
+    }
+    if (dom.cloudDialog) {
+      dom.cloudDialog.addEventListener('click', (event) => {
+        if (event.target === dom.cloudDialog) dom.cloudDialog.close();
+      });
+    }
+
     dom.clearProject.addEventListener('click', openClearDialog);
     dom.clearDialog.addEventListener('close', onClearDialogClose);
 
@@ -10843,6 +11265,14 @@
     // маркировки выводится лист наклеек, иначе — журнал или смета.
     window.addEventListener('beforeprint', () => {
       if (!project) return;
+      if (printContext === 'full') {
+        // Документ уже собран кнопкой; только восстанавливаем состояние
+        // печати на случай повторного вызова диалога браузером.
+        document.body.classList.add('print-full', 'print-marking');
+        document.body.classList.remove('print-estimate', 'print-tape');
+        updateMarkingPageStyle('marking');
+        return;
+      }
       const useTape = activeTab === 'marking' && markingMode === 'tape';
       const context = activeTab === 'marking' ? 'marking' : printContext;
       document.body.classList.toggle('print-tape', useTape);
@@ -10859,11 +11289,13 @@
       }
     });
     window.addEventListener('afterprint', () => {
+      const wasFull = printContext === 'full';
       document.body.classList.remove('print-estimate');
       document.body.classList.remove('print-marking');
       document.body.classList.remove('print-tape');
       printContext = 'journal';
       dom.markingPageStyle.textContent = '';
+      if (wasFull) clearFullPrintView();
       if (activeTab === 'marking') renderMarking();
     });
   }
