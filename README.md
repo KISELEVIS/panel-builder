@@ -1,4 +1,4 @@
-https://kiselevis.github.io/panel-builder/
+https://kiselevis.github.io/panel-builder/ *прямая ссылка*
 
 # Щит.Студия — прототип конфигуратора электрического щита
 
