@@ -1,0 +1,23 @@
+# Операционная система и редакторы
+Thumbs.db
+desktop.ini
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Временные и резервные файлы
+*.tmp
+*.bak
+*.log
+
+# Сборка и зависимости (проект пока без сборщика)
+node_modules/
+dist/
+build/
+
+# Локальные секреты и окружение
+.env
+.env.*
+!.env.example
