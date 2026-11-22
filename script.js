@@ -34,6 +34,11 @@
     console.error('[Щит.Студия] Не удалось инициализировать Supabase:', error);
   }
 
+  // Текущий пользователь Supabase. Пока он не задан, облачные кнопки
+  // неактивны, а все запросы к таблице projects идут через RLS.
+  let currentUser = null;
+  let cloudBusy = false;
+
   /* ----------------------------- Constants ----------------------------- */
 
   // Ключ намеренно остаётся прежним: так старые проекты находятся и мигрируют.
@@ -698,6 +703,18 @@
     cloudDialogList: document.getElementById('cloud-project-list'),
     cloudDialogClose: document.getElementById('cloud-dialog-close'),
     cloudDialogCancel: document.getElementById('cloud-dialog-cancel'),
+    // Авторизация (Supabase Auth).
+    authBlock: document.getElementById('auth-block'),
+    authEmail: document.getElementById('auth-email'),
+    authLogin: document.getElementById('auth-login'),
+    authLogout: document.getElementById('auth-logout'),
+    authDialog: document.getElementById('auth-dialog'),
+    authForm: document.getElementById('auth-form'),
+    authEmailInput: document.getElementById('auth-email-input'),
+    authPasswordInput: document.getElementById('auth-password-input'),
+    authError: document.getElementById('auth-error'),
+    authSigninBtn: document.getElementById('auth-signin-btn'),
+    authSignupBtn: document.getElementById('auth-signup-btn'),
     // Контекстное меню (ПКМ) — живёт на уровне body, position: fixed.
     contextMenu: document.getElementById('context-menu'),
     contextMenuHead: document.getElementById('context-menu-head'),
@@ -7638,14 +7655,207 @@
     reader.readAsText(file, 'utf-8');
   }
 
+  /* --------------------- Авторизация (Supabase Auth) ------------------- */
+
+  function setAuthError(message, info = false) {
+    if (!dom.authError) return;
+    dom.authError.textContent = message || '';
+    dom.authError.classList.toggle('is-info', Boolean(info) && Boolean(message));
+    dom.authError.hidden = !message;
+  }
+
+  function clearAuthError() {
+    if (dom.authError && !dom.authError.hidden) setAuthError('');
+  }
+
+  function showAuthDialog() {
+    if (!dom.authDialog) return;
+    clearAuthError();
+    if (typeof dom.authDialog.showModal === 'function') {
+      if (!dom.authDialog.open) dom.authDialog.showModal();
+    } else {
+      dom.authDialog.setAttribute('open', '');
+    }
+  }
+
+  function hideAuthDialog() {
+    if (dom.authDialog?.open) dom.authDialog.close();
+    if (dom.authPasswordInput) dom.authPasswordInput.value = '';
+    clearAuthError();
+  }
+
+  // Облачные кнопки доступны только авторизованному пользователю.
+  function syncCloudControls() {
+    const disabled = cloudBusy || !currentUser;
+    [dom.cloudSave, dom.cloudLoad].forEach((button) => {
+      if (!button) return;
+      button.disabled = disabled;
+      button.title = currentUser
+        ? (button === dom.cloudSave
+            ? 'Сохранить текущий проект в облако (Supabase)'
+            : 'Загрузить проект из облака (Supabase)')
+        : 'Сначала войдите в аккаунт';
+    });
+  }
+
+  function applyAuthSession(user) {
+    currentUser = user || null;
+    const signedIn = Boolean(currentUser);
+    if (dom.authLogin) dom.authLogin.hidden = signedIn;
+    if (dom.authLogout) dom.authLogout.hidden = !signedIn;
+    if (dom.authEmail) {
+      dom.authEmail.hidden = !signedIn;
+      dom.authEmail.textContent = currentUser?.email || '';
+      dom.authEmail.title = currentUser?.email || '';
+    }
+    if (signedIn) hideAuthDialog();
+    syncCloudControls();
+  }
+
+  function requireAuth() {
+    if (currentUser) return true;
+    showToast('Сначала войдите в аккаунт', 'error', 3500);
+    showAuthDialog();
+    return false;
+  }
+
+  function localizeAuthError(error) {
+    const message = String(error?.message || error || 'Неизвестная ошибка');
+    const lower = message.toLowerCase();
+    if (lower.includes('invalid login credentials')) return 'Неверный email или пароль.';
+    if (lower.includes('email not confirmed')) return 'Email не подтверждён. Проверьте почту.';
+    if (lower.includes('user already registered') || lower.includes('already registered')) {
+      return 'Этот email уже зарегистрирован.';
+    }
+    if (lower.includes('password should be at least')) return 'Пароль должен быть не короче 6 символов.';
+    if (lower.includes('signup is disabled')) return 'Регистрация отключена на сервере.';
+    if (lower.includes('unable to validate email') || lower.includes('invalid email')) {
+      return 'Некорректный email.';
+    }
+    if (lower.includes('too many requests')) return 'Слишком много попыток. Подождите немного.';
+    if (lower.includes('failed to fetch') || lower.includes('network')) {
+      return 'Нет связи с сервером авторизации.';
+    }
+    return message;
+  }
+
+  function setAuthBusy(busy) {
+    [dom.authSigninBtn, dom.authSignupBtn].forEach((button) => {
+      if (button) button.disabled = busy;
+    });
+  }
+
+  function readAuthCredentials() {
+    const email = String(dom.authEmailInput?.value || '').trim();
+    const password = String(dom.authPasswordInput?.value || '');
+    if (!email || !password) {
+      setAuthError('Введите email и пароль.');
+      return null;
+    }
+    return { email, password };
+  }
+
+  async function signInWithEmail() {
+    if (!supabase) {
+      setAuthError('Сервис авторизации недоступен.');
+      return;
+    }
+    const credentials = readAuthCredentials();
+    if (!credentials) return;
+    clearAuthError();
+    setAuthBusy(true);
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword(credentials);
+      if (error) throw error;
+      applyAuthSession(data?.user || null);
+      showToast('Вы вошли в аккаунт', 'success', 2600);
+    } catch (error) {
+      setAuthError(localizeAuthError(error));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function signUpWithEmail() {
+    if (!supabase) {
+      setAuthError('Сервис авторизации недоступен.');
+      return;
+    }
+    const credentials = readAuthCredentials();
+    if (!credentials) return;
+    clearAuthError();
+    setAuthBusy(true);
+    try {
+      const { data, error } = await supabase.auth.signUp(credentials);
+      if (error) throw error;
+      if (data?.session) {
+        // Подтверждение email выключено — сессия активна сразу.
+        applyAuthSession(data.user);
+        showToast('Регистрация выполнена', 'success', 2800);
+      } else {
+        // Подтверждение включено: пользователь сможет войти после перехода
+        // по ссылке из письма с тем же паролем.
+        setAuthError('Регистрация создана. Подтвердите email по ссылке в письме, затем войдите.', true);
+      }
+    } catch (error) {
+      setAuthError(localizeAuthError(error));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function signOutUser() {
+    if (!supabase) return;
+    setAuthBusy(true);
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+      applyAuthSession(null);
+      if (dom.cloudDialog?.open) dom.cloudDialog.close();
+      showAuthDialog();
+      showToast('Вы вышли из аккаунта', 'success', 2600);
+    } catch (error) {
+      reportCloudError('Ошибка выхода из аккаунта', error);
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  // Проверка сессии при загрузке страницы. onAuthStateChange дополнительно
+  // синхронизирует UI при обновлении токена и входе/выходе из другой вкладки.
+  async function initAuth() {
+    syncCloudControls();
+    if (!supabase) {
+      setAuthError('Не удалось загрузить сервис авторизации. Проверьте соединение.');
+      showAuthDialog();
+      return;
+    }
+    try {
+      supabase.auth.onAuthStateChange((_event, session) => {
+        applyAuthSession(session?.user || null);
+      });
+      const { data: { session } } = await supabase.auth.getSession();
+      applyAuthSession(session?.user || null);
+      if (!session) showAuthDialog();
+    } catch (error) {
+      console.error('[Щит.Студия] Ошибка проверки сессии:', error);
+      setAuthError('Не удалось проверить сессию. Попробуйте войти ещё раз.');
+      showAuthDialog();
+    }
+  }
+
   /* --------------------- Проекты в облаке (Supabase) ------------------- */
 
   const CLOUD_CONNECTION_ERROR = 'Ошибка подключения к облаку';
+  // Статическая разметка иконки корзины: данные из базы всегда выводятся
+  // через textContent, в HTML попадает только эта константа.
+  const TRASH_ICON = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true">' +
+    '<path d="M4.5 6h11M8 6V4.5h4V6m-6 0 .7 10h6.6L14 6M8.6 9v4.4M11.4 9v4.4" ' +
+    'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
   function setCloudBusy(busy) {
-    [dom.cloudSave, dom.cloudLoad].forEach((button) => {
-      if (button) button.disabled = busy;
-    });
+    cloudBusy = Boolean(busy);
+    syncCloudControls();
   }
 
   function reportCloudError(context, error, message = CLOUD_CONNECTION_ERROR) {
@@ -7662,9 +7872,10 @@
     }).format(date);
   }
 
-  // Сохранение текущего проекта в таблицу projects.
+  // Сохранение текущего проекта в таблицу projects с привязкой к пользователю.
   async function saveProjectToCloud() {
     if (!project) return;
+    if (!requireAuth()) return;
     if (!supabase) {
       reportCloudError('Supabase не инициализирован', new Error('Нет подключения к Supabase'));
       return;
@@ -7683,13 +7894,31 @@
 
     setCloudBusy(true);
     try {
+      // Перед вставкой получаем текущего пользователя: user_id записывается
+      // в строку и используется политикой RLS для разделения проектов.
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError) throw userError;
+      if (!user) {
+        applyAuthSession(null);
+        requireAuth();
+        return;
+      }
       const { error } = await supabase
         .from('projects')
-        .insert([{ name: projectName, data: buildProjectState() }]);
+        .insert([{ name: projectName, data: buildProjectState(), user_id: user.id }]);
       if (error) throw error;
       showToast('Проект сохранен в облако!', 'success', 3200);
     } catch (error) {
-      reportCloudError('Ошибка сохранения проекта в Supabase', error);
+      const message = String(error?.message || '').toLowerCase();
+      if (message.includes('user_id') && message.includes('does not exist')) {
+        reportCloudError('Ошибка сохранения проекта', error,
+          'В таблице projects нет колонки user_id. Добавьте её и включите RLS.');
+      } else if (message.includes('row-level security')) {
+        reportCloudError('Ошибка сохранения проекта', error,
+          'Нет прав на запись в облако. Проверьте RLS-политику.');
+      } else {
+        reportCloudError('Ошибка сохранения проекта в Supabase', error);
+      }
     } finally {
       setCloudBusy(false);
     }
@@ -7740,37 +7969,90 @@
     }
   }
 
+  function renderCloudEmpty() {
+    if (!dom.cloudDialogList) return;
+    const empty = document.createElement('p');
+    empty.className = 'cloud-project-empty';
+    empty.textContent = 'У вас пока нет сохранённых проектов.';
+    dom.cloudDialogList.replaceChildren(empty);
+  }
+
   function renderCloudProjectList(rows) {
     if (!dom.cloudDialogList) return;
-    dom.cloudDialogList.replaceChildren();
-
     if (!rows.length) {
-      const empty = document.createElement('p');
-      empty.className = 'cloud-project-empty';
-      empty.textContent = 'В облаке пока нет сохранённых проектов.';
-      dom.cloudDialogList.appendChild(empty);
+      renderCloudEmpty();
       return;
     }
 
+    dom.cloudDialogList.replaceChildren();
     rows.forEach((row) => {
-      const item = document.createElement('button');
-      item.type = 'button';
+      const name = safeText(row.name, 'Без названия', 60) || 'Без названия';
+      const item = document.createElement('div');
       item.className = 'cloud-project-item';
-      item.setAttribute('role', 'option');
+      item.setAttribute('role', 'listitem');
 
+      const info = document.createElement('div');
+      info.className = 'cloud-project-info';
       const title = document.createElement('strong');
-      title.textContent = safeText(row.name, 'Без названия', 60) || 'Без названия';
+      title.textContent = name;
       const meta = document.createElement('span');
       meta.textContent = formatCloudDate(row.updated_at || row.created_at);
+      info.append(title, meta);
 
-      item.append(title, meta);
-      item.addEventListener('click', () => loadProjectFromCloud(row));
+      const actions = document.createElement('div');
+      actions.className = 'cloud-project-actions';
+
+      const loadBtn = document.createElement('button');
+      loadBtn.type = 'button';
+      loadBtn.className = 'btn btn-cloud-load';
+      loadBtn.textContent = 'Загрузить';
+      loadBtn.title = `Загрузить проект «${name}»`;
+      loadBtn.addEventListener('click', () => loadProjectFromCloud(row));
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.className = 'btn btn-cloud-delete';
+      deleteBtn.innerHTML = TRASH_ICON;
+      deleteBtn.title = `Удалить проект «${name}»`;
+      deleteBtn.setAttribute('aria-label', deleteBtn.title);
+      deleteBtn.addEventListener('click', () => deleteCloudProject(row, item));
+
+      actions.append(loadBtn, deleteBtn);
+      item.append(info, actions);
       dom.cloudDialogList.appendChild(item);
     });
   }
 
-  // Загрузка списка проектов и открытие диалога выбора.
+  // Удаление строки из таблицы projects и соответствующей строки из списка.
+  async function deleteCloudProject(row, item) {
+    if (!requireAuth()) return;
+    if (!supabase) {
+      reportCloudError('Supabase не инициализирован', new Error('Нет подключения к Supabase'));
+      return;
+    }
+    if (!window.confirm('Точно удалить проект?')) return;
+
+    const buttons = Array.from(item.querySelectorAll('button'));
+    buttons.forEach((button) => { button.disabled = true; });
+    setCloudBusy(true);
+    try {
+      const { error } = await supabase.from('projects').delete().eq('id', row.id);
+      if (error) throw error;
+      item.remove();
+      if (!dom.cloudDialogList?.children.length) renderCloudEmpty();
+      showToast('Проект удалён', 'success', 2600);
+    } catch (error) {
+      reportCloudError('Ошибка удаления проекта из Supabase', error);
+      buttons.forEach((button) => { button.disabled = false; });
+    } finally {
+      setCloudBusy(false);
+    }
+  }
+
+  // Загрузка списка проектов и открытие диалога «Мои проекты».
+  // Supabase сам ограничивает выборку политикой RLS по текущему user_id.
   async function openCloudProjectDialog() {
+    if (!requireAuth()) return;
     if (!supabase) {
       reportCloudError('Supabase не инициализирован', new Error('Нет подключения к Supabase'));
       return;
@@ -7787,12 +8069,18 @@
       renderCloudProjectList(Array.isArray(data) ? data : []);
       if (!dom.cloudDialog) return;
       if (typeof dom.cloudDialog.showModal === 'function') {
-        dom.cloudDialog.showModal();
+        if (!dom.cloudDialog.open) dom.cloudDialog.showModal();
       } else {
         dom.cloudDialog.setAttribute('open', '');
       }
     } catch (error) {
-      reportCloudError('Ошибка загрузки списка проектов из Supabase', error);
+      const message = String(error?.message || '').toLowerCase();
+      if (message.includes('row-level security')) {
+        reportCloudError('Ошибка загрузки списка проектов', error,
+          'Нет прав на чтение облака. Проверьте RLS-политику.');
+      } else {
+        reportCloudError('Ошибка загрузки списка проектов из Supabase', error);
+      }
     } finally {
       setCloudBusy(false);
     }
@@ -10954,6 +11242,20 @@
     if (dom.importProject) dom.importProject.addEventListener('click', openImportFileDialog);
     if (dom.importFile) dom.importFile.addEventListener('change', onImportFileChange);
 
+    // Авторизация: вход, регистрация и выход.
+    if (dom.authForm) {
+      dom.authForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        signInWithEmail();
+      });
+    }
+    if (dom.authSignupBtn) dom.authSignupBtn.addEventListener('click', signUpWithEmail);
+    if (dom.authLogin) dom.authLogin.addEventListener('click', showAuthDialog);
+    if (dom.authLogout) dom.authLogout.addEventListener('click', signOutUser);
+    [dom.authEmailInput, dom.authPasswordInput].forEach((input) => {
+      if (input) input.addEventListener('input', clearAuthError);
+    });
+
     // Облачные проекты: сохранение, загрузка и диалог выбора.
     if (dom.cloudSave) dom.cloudSave.addEventListener('click', saveProjectToCloud);
     if (dom.cloudLoad) dom.cloudLoad.addEventListener('click', openCloudProjectDialog);
@@ -11302,7 +11604,7 @@
 
   /* ------------------------------- Init ------------------------------- */
 
-  function init() {
+  async function init() {
     installVisualDefs();
     setupSvgLayerStructure();
     renderLibrary();
@@ -11329,6 +11631,10 @@
     for (const [message, type] of bootNotices) {
       showToast(message, type, 5000);
     }
+
+    // Проверяем сессию Supabase: без неё показываем окно входа и держим
+    // облачные кнопки неактивными.
+    await initAuth();
   }
 
   if (document.readyState === 'loading') {
