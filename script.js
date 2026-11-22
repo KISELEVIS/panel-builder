@@ -11,27 +11,38 @@
    используются.
    ========================================================================= */
 
+/* --------------------------- Supabase (глобально) ----------------------
+   Клиент создаётся ОДИН раз и доступен глобально (в том числе как
+   window.supabaseClient).
+   createClient вызывается через window.supabase — глобал из CDN, подключённого
+   в index.html ДО этого скрипта. Глобальную переменную объявляем через var:
+   CDN уже создал global var supabase, и повторное const/let выбросило бы
+   SyntaxError и убило весь скрипт.
+   Если библиотека не загрузилась (например, нет интернета), supabase будет null
+   и приложение продолжит работать локально. */
+if (!window.fetch) {
+  console.warn('Внимание: fetch не поддерживается в этом браузере');
+}
+
+const supabaseUrl = 'https://sqtmnjxauskzyfnvfcpx.supabase.co';
+const supabaseKey = 'sb_publishable_R3a6uqxbP9rQAaJrcnyqXA_A00D0U0O';
+// var (а не const/let) использован намеренно: CDN-библиотека уже объявляет
+// глобальную var supabase, и повторное const вызвало бы SyntaxError и убило
+// весь скрипт. Повторная декларация var просто перезаписывает глобал клиентом.
+var supabase = window.supabase && typeof window.supabase.createClient === 'function'
+  ? window.supabase.createClient(supabaseUrl, supabaseKey)
+  : null;
+window.supabaseClient = supabase;
+
 (() => {
   'use strict';
 
   /* ----------------------- Облако (Supabase) ---------------------------
-     Клиент создаётся один раз при запуске. Если CDN не загрузился (нет
-     интернета) или ключи недействительны, приложение продолжает работать
-     локально: ошибка выводится в консоль и в тост при попытке сохранить
-     или загрузить проект. */
-  const supabaseUrl = 'https://sqtmnjxauskzyfnvfcpx.supabase.co';
-  const supabaseKey = 'sb_publishable_R3a6uqxbP9rQAaJrcnyqXA_A00D0U0O';
-  let supabase = null;
-
-  try {
-    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
-      throw new Error('Библиотека @supabase/supabase-js не загружена');
-    }
-    // window.supabase — глобал из CDN; локальная переменная намеренно
-    // называется так же, но читается через window, чтобы не попасть в TDZ.
-    supabase = window.supabase.createClient(supabaseUrl, supabaseKey);
-  } catch (error) {
-    console.error('[Щит.Студия] Не удалось инициализировать Supabase:', error);
+     Клиент уже создан в глобальной области (см. начало файла). Если CDN не
+     загрузился, supabase === null: облачные кнопки неактивны, приложение
+     продолжает работать локально. */
+  if (!supabase) {
+    console.error('[Щит.Студия] Не удалось инициализировать Supabase: библиотека @supabase/supabase-js не загружена');
   }
 
   // Текущий пользователь Supabase. Пока он не задан, облачные кнопки
@@ -7746,24 +7757,10 @@
     return false;
   }
 
-  function localizeAuthError(error) {
-    const message = String(error?.message || error || 'Неизвестная ошибка');
-    const lower = message.toLowerCase();
-    if (lower.includes('invalid login credentials')) return 'Неверный email или пароль.';
-    if (lower.includes('email not confirmed')) return 'Email не подтверждён. Проверьте почту.';
-    if (lower.includes('user already registered') || lower.includes('already registered')) {
-      return 'Этот email уже зарегистрирован.';
-    }
-    if (lower.includes('password should be at least')) return 'Пароль должен быть не короче 6 символов.';
-    if (lower.includes('signup is disabled')) return 'Регистрация отключена на сервере.';
-    if (lower.includes('unable to validate email') || lower.includes('invalid email')) {
-      return 'Некорректный email.';
-    }
-    if (lower.includes('too many requests')) return 'Слишком много попыток. Подождите немного.';
-    if (lower.includes('failed to fetch') || lower.includes('network')) {
-      return 'Нет связи с сервером авторизации.';
-    }
-    return message;
+  // Supabase Auth возвращает сообщение об ошибке в error.message — именно его
+  // и показываем в красной плашке (например, "Invalid login credentials").
+  function authErrorMessage(error) {
+    return String(error?.message || error || 'Неизвестная ошибка');
   }
 
   function setAuthBusy(busy) {
@@ -7784,20 +7781,28 @@
 
   async function signInWithEmail() {
     if (!supabase) {
+      console.error('Supabase не инициализирован');
       setAuthError('Сервис авторизации недоступен.');
       return;
     }
     const credentials = readAuthCredentials();
     if (!credentials) return;
     clearAuthError();
+    console.log('Попытка входа:', credentials.email);
     setAuthBusy(true);
     try {
-      const { data, error } = await supabase.auth.signInWithPassword(credentials);
+      // Supabase Auth v2 возвращает { data, error }, а не Response —
+      // проверять нужно error, а не response.ok / res.ok.
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: credentials.email,
+        password: credentials.password
+      });
       if (error) throw error;
       applyAuthSession(data?.user || null);
       showToast('Вы вошли в аккаунт', 'success', 2600);
-    } catch (error) {
-      setAuthError(localizeAuthError(error));
+    } catch (err) {
+      console.error(err);
+      setAuthError(authErrorMessage(err));
     } finally {
       setAuthBusy(false);
     }
@@ -7805,15 +7810,20 @@
 
   async function signUpWithEmail() {
     if (!supabase) {
+      console.error('Supabase не инициализирован');
       setAuthError('Сервис авторизации недоступен.');
       return;
     }
     const credentials = readAuthCredentials();
     if (!credentials) return;
     clearAuthError();
+    console.log('Попытка регистрации:', credentials.email);
     setAuthBusy(true);
     try {
-      const { data, error } = await supabase.auth.signUp(credentials);
+      const { data, error } = await supabase.auth.signUp({
+        email: credentials.email,
+        password: credentials.password
+      });
       if (error) throw error;
       if (data?.session) {
         // Подтверждение email выключено — сессия активна сразу.
@@ -7824,8 +7834,9 @@
         // по ссылке из письма с тем же паролем.
         setAuthError('Регистрация создана. Подтвердите email по ссылке в письме, затем войдите.', true);
       }
-    } catch (error) {
-      setAuthError(localizeAuthError(error));
+    } catch (err) {
+      console.error(err);
+      setAuthError(authErrorMessage(err));
     } finally {
       setAuthBusy(false);
     }
@@ -7860,7 +7871,9 @@
       supabase.auth.onAuthStateChange((_event, session) => {
         applyAuthSession(session?.user || null);
       });
-      const { data: { session } } = await supabase.auth.getSession();
+      const { data, error } = await supabase.auth.getSession();
+      if (error) throw error;
+      const session = data?.session || null;
       applyAuthSession(session?.user || null);
       if (!session) {
         // Гость видит весь сайт и работает локально; окно входа открывается
