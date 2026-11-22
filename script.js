@@ -54,6 +54,13 @@ window.supabaseClient = supabase;
 
   // Ключ намеренно остаётся прежним: так старые проекты находятся и мигрируют.
   const STORAGE_KEY = 'panel-builder.project.v1';
+  // Блок «Недавние» в левой библиотеке: id часто используемых приборов.
+  const RECENT_STORAGE_KEY = 'panel-builder.recent.v1';
+  const RECENT_LIMIT = 6;
+  // Архив предыдущих проектов: «Новый щит» сохраняет текущий проект здесь,
+  // чтобы он не потерялся при перезаписи основного ключа localStorage.
+  const ARCHIVE_STORAGE_KEY = 'panel-builder.archive.v1';
+  const ARCHIVE_LIMIT = 20;
   // v5: модули привязаны к слотам (slot) вместо порядкового номера (order).
   // Старые проекты с order конвертируются в slot при загрузке.
   // v6: добавлены мощность нагрузки (power) и отображение параметров сети
@@ -534,6 +541,18 @@ window.supabaseClient = supabase;
     librarySearchClear: document.getElementById('library-search-clear'),
     librarySearchStatus: document.getElementById('library-search-status'),
     libraryNoResults: document.getElementById('library-no-results'),
+    newProject: document.getElementById('new-project'),
+    newProjectTop: document.getElementById('new-project-top'),
+    newProjectDialog: document.getElementById('new-project-dialog'),
+    newProjectDialogText: document.getElementById('new-project-dialog-text'),
+    addDevice: document.getElementById('add-device'),
+    deviceDialog: document.getElementById('device-dialog'),
+    deviceDialogSubtitle: document.getElementById('device-dialog-subtitle'),
+    deviceDialogClose: document.getElementById('device-dialog-close'),
+    deviceDialogCancel: document.getElementById('device-dialog-cancel'),
+    deviceSearch: document.getElementById('device-search'),
+    deviceList: document.getElementById('device-list'),
+    deviceEmpty: document.getElementById('device-empty'),
     projectName: document.getElementById('project-name'),
     saveState: document.getElementById('save-state'),
     saveText: document.getElementById('save-text'),
@@ -735,6 +754,11 @@ window.supabaseClient = supabase;
   /* ------------------------------ State ------------------------------- */
 
   let project = null;
+  // Рейка, с которой пользователь работал последней: именно сюда ставится
+  // прибор, выбранный кнопкой «+ Добавить прибор» на панели холста.
+  let activeRailId = null;
+  // Рейка, для которой открыто окно выбора прибора (из кнопки «+» на рейке).
+  let devicePickerRailId = null;
   // Активная вкладка рабочей области: 'schema' | 'journal'.
   let activeTab = 'schema';
   // Что печатать: по умолчанию кабельный журнал, кнопки сметы/маркировки
@@ -801,7 +825,10 @@ window.supabaseClient = supabase;
   // не должны «откатываться» вместе со структурой щита.
   let history = [];
   let historyIndex = -1;
-  const libraryOpenState = new Set(LIBRARY_CATEGORIES.length ? [LIBRARY_CATEGORIES[0].id] : []);
+  // «Недавние» всегда раскрыты — это быстрый доступ к часто используемым модулям.
+  const libraryOpenState = new Set(LIBRARY_CATEGORIES.length
+    ? [LIBRARY_CATEGORIES[0].id, 'recent']
+    : ['recent']);
   const bootNotices = [];
 
   /* ----------------------------- Utilities ---------------------------- */
@@ -3070,8 +3097,59 @@ window.supabaseClient = supabase;
       </button>`;
   }
 
+  /* -------------------- Недавние (левая библиотека) -------------------
+     Блок остаётся на месте при любых изменениях логики добавления: он
+     хранит id последних использованных приборов и позволяет электрику
+     доставать их одним кликом/перетаскиванием. */
+  function recentLibraryIds() {
+    try {
+      const raw = window.localStorage.getItem(RECENT_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed)
+        ? parsed.filter((id) => LIBRARY_BY_ID.has(id)).slice(0, RECENT_LIMIT)
+        : [];
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function rememberRecentLibrary(libraryId) {
+    if (!LIBRARY_BY_ID.has(libraryId)) return;
+    const next = [libraryId, ...recentLibraryIds().filter((id) => id !== libraryId)]
+      .slice(0, RECENT_LIMIT);
+    try {
+      window.localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(next));
+    } catch (error) {
+      // При недоступном localStorage блок «Недавние» просто не запоминается.
+    }
+  }
+
+  function recentGroupMarkup() {
+    let ids = recentLibraryIds();
+    // Пока ни одного прибора не добавлено, показываем несколько базовых —
+    // блок «Недавние» не должен быть пустым при первом запуске.
+    if (!ids.length) ids = LIBRARY.slice(0, 4).map((item) => item.id);
+    const items = ids.map((id) => LIBRARY_BY_ID.get(id)).filter(Boolean);
+    if (!items.length) return '';
+    return `
+      <details class="component-group recent-group" data-category="recent" open>
+        <summary class="component-group-summary">
+          <span class="component-group-title">Недавние</span>
+          <span class="component-group-side">
+            <span class="component-group-count">${items.length}</span>
+            <svg class="component-group-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
+        </summary>
+        <div class="component-group-body">
+          ${items.map(libraryCardMarkup).join('')}
+        </div>
+      </details>`;
+  }
+
   function renderLibrary() {
-    dom.libraryList.innerHTML = LIBRARY_CATEGORIES.map((category) => {
+    dom.libraryList.innerHTML = recentGroupMarkup() + LIBRARY_CATEGORIES.map((category) => {
       const items = LIBRARY.filter((item) => item.category === category.id);
       const isOpen = libraryOpenState.has(category.id);
       if (isOpen) libraryOpenState.add(category.id);
@@ -3250,6 +3328,19 @@ window.supabaseClient = supabase;
         ${capacityButton('increase', plusX, `Удлинить рейку ${railIndex + 1}`, capacity >= MAX_RAIL_CAPACITY)}
       </g>`;
 
+    // Кнопка «+» на самой рейке: открывает выбор прибора для ЭТОЙ рейки.
+    // Она стоит над правым краем пластины рядом с блоком [-] N [+], а не
+    // в пустых слотах — пустые слоты остаются свободными для модулей.
+    const addDeviceButton = `
+      <g class="rail-add-device" data-add-device-rail="${escapeHtml(rail.id)}"
+         transform="translate(${right - 18} ${railY - 27})" tabindex="0" role="button"
+         aria-label="${escapeHtml(`Выбрать прибор для рейки ${railIndex + 1}`)}"
+         title="Добавить прибор на рейку ${railIndex + 1}">
+        <circle class="rail-add-device-hit" r="16"/>
+        <rect class="rail-add-device-bg" x="-11" y="-11" width="22" height="22" rx="7"/>
+        <path class="rail-add-device-icon" d="M -4.5 0 H 4.5 M 0 -4.5 V 4.5"/>
+      </g>`;
+
     const canDelete = rail.modules.length === 0 && project.rails.length > 1;
     const deleteButton = canDelete ? `
       <g class="rail-delete" data-delete-rail="${escapeHtml(rail.id)}"
@@ -3304,6 +3395,7 @@ window.supabaseClient = supabase;
                             width="${channelWidth + 4}" height="${channelBottom - channelTop + 4}" rx="10"/>` : ''}
         ${capacityControls}
         ${deleteButton}
+        ${addDeviceButton}
       </g>`;
   }
 
@@ -6174,6 +6266,7 @@ window.supabaseClient = supabase;
     module.slot = targetSlot;
     rail.modules.push(module);
     normalizeSlots();
+    rememberRecentLibrary(libraryId);
     persistProject();
     commitHistory();
     renderAll();
@@ -6476,7 +6569,7 @@ window.supabaseClient = supabase;
     // В режиме добавления заметки жесты перетаскивания/выделения не нужны.
     if (notePlacing) return;
 
-    if (event.target.closest('[data-delete-module], [data-delete-wire], [data-delete-rail], [data-delete-note], [data-rail-capacity], [data-port-id], [data-connection-id], [data-toggle-module], [data-toggle-source]')) {
+    if (event.target.closest('[data-delete-module], [data-delete-wire], [data-delete-rail], [data-delete-note], [data-rail-capacity], [data-add-device-rail], [data-port-id], [data-connection-id], [data-toggle-module], [data-toggle-source]')) {
       return;
     }
 
@@ -6992,6 +7085,16 @@ window.supabaseClient = supabase;
       return;
     }
 
+    // Запоминаем рейку, с которой работает пользователь: «+ Добавить прибор»
+    // на панели холста ставит модуль именно в неё.
+    rememberActiveRail(event);
+
+    const addDeviceButton = event.target.closest('[data-add-device-rail]');
+    if (addDeviceButton) {
+      openDeviceDialog(addDeviceButton.getAttribute('data-add-device-rail'));
+      return;
+    }
+
     // Единая точка перевода курсора в координаты схемы для всех кликов по
     // холсту (порты, фон). getScreenCTM().inverse() учитывает текущий зум.
     const svgPoint = getSVGCoords(event);
@@ -7322,6 +7425,13 @@ window.supabaseClient = supabase;
       return;
     }
 
+    const addDeviceButton = event.target.closest('[data-add-device-rail]');
+    if (addDeviceButton && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault();
+      openDeviceDialog(addDeviceButton.getAttribute('data-add-device-rail'));
+      return;
+    }
+
     const capButton = event.target.closest('[data-rail-capacity]');
     if (capButton && (event.key === 'Enter' || event.key === ' ')) {
       event.preventDefault();
@@ -7533,6 +7643,191 @@ window.supabaseClient = supabase;
       clearProject();
     }
     dom.clearDialog.returnValue = 'cancel';
+  }
+
+  /* ------------------ Выбор прибора для конкретной рейки -------------- */
+
+  // Клик по рейке/модулю запоминает рейку — в неё уйдёт прибор, выбранный
+  // кнопкой «+ Добавить прибор» на панели холста (без привязки к слотам).
+  function rememberActiveRail(event) {
+    const railElement = event.target.closest?.('.rail[data-rail-id]');
+    if (railElement) {
+      activeRailId = railElement.getAttribute('data-rail-id');
+      return;
+    }
+    const moduleElement = event.target.closest?.('[data-module-id]');
+    if (moduleElement) {
+      const location = railOfModule(moduleElement.getAttribute('data-module-id'));
+      if (location) activeRailId = location.rail.id;
+    }
+  }
+
+  function targetRailForDevice() {
+    return railById(activeRailId) || project?.rails[0] || null;
+  }
+
+  function openDeviceDialog(railId) {
+    const rail = railById(railId) || targetRailForDevice();
+    if (!rail || !dom.deviceDialog) return;
+
+    devicePickerRailId = rail.id;
+    activeRailId = rail.id;
+    if (dom.deviceDialogSubtitle) {
+      dom.deviceDialogSubtitle.textContent =
+        `Прибор будет установлен в первый свободный слот рейки ${railIndexOf(rail.id) + 1} (${rail.capacity} P).`;
+    }
+    if (dom.deviceSearch) dom.deviceSearch.value = '';
+    renderDeviceList('');
+
+    if (typeof dom.deviceDialog.showModal === 'function') {
+      if (!dom.deviceDialog.open) dom.deviceDialog.showModal();
+      dom.deviceSearch?.focus();
+    } else {
+      dom.deviceDialog.setAttribute('open', '');
+    }
+  }
+
+  function closeDeviceDialog() {
+    if (dom.deviceDialog?.open && typeof dom.deviceDialog.close === 'function') {
+      dom.deviceDialog.close();
+    } else {
+      dom.deviceDialog?.removeAttribute('open');
+    }
+    devicePickerRailId = null;
+  }
+
+  function renderDeviceList(rawQuery) {
+    if (!dom.deviceList) return;
+    const query = String(rawQuery || '').trim().toLocaleLowerCase('ru');
+    const matches = LIBRARY.filter((item) => {
+      if (!query) return true;
+      const category = LIBRARY_CATEGORY_BY_ID.get(item.category);
+      return [
+        item.name, item.typeLabel, item.tagPrefix, item.brand,
+        item.sku, item.description, category?.label || ''
+      ].join(' ').toLocaleLowerCase('ru').includes(query);
+    });
+    dom.deviceList.innerHTML = matches.map(libraryCardMarkup).join('');
+    if (dom.deviceEmpty) dom.deviceEmpty.hidden = matches.length > 0;
+  }
+
+  function onDeviceListClick(event) {
+    const card = event.target.closest('.component-card[data-library-id]');
+    if (!card) return;
+    const libraryItem = LIBRARY_BY_ID.get(card.getAttribute('data-library-id'));
+    if (!libraryItem) return;
+
+    const rail = railById(devicePickerRailId) || targetRailForDevice();
+    if (!rail) return;
+    // Первый свободный слот именно этой рейки (а не «в конец любой рейки»).
+    const slot = findFreeSlot(rail, libraryItem.width);
+    if (slot === null || !canPlaceModule(rail, slot, libraryItem.width)) {
+      reportNoRoom(rail, libraryItem.width);
+      return;
+    }
+    if (placeLibraryModule(libraryItem.id, slot, { railId: rail.id })) {
+      closeDeviceDialog();
+    }
+  }
+
+  /* ---------------------------- Новый щит ---------------------------- */
+
+  // Сохранение текущего проекта в облако перед очисткой холста — без
+  // запроса имени (в отличие от ручной кнопки «Сохранить в облако»).
+  async function saveCurrentProjectToCloudSnapshot() {
+    if (!currentUser || !supabase || !project) return false;
+    try {
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError || !user) return false;
+      const { error } = await supabase
+        .from('projects')
+        .insert([{
+          name: String(project.name || 'Новый щит').slice(0, 60),
+          data: buildProjectState(),
+          user_id: user.id
+        }]);
+      if (error) throw error;
+      return true;
+    } catch (error) {
+      reportCloudError('Не удалось сохранить проект в облако перед созданием нового', error);
+      return false;
+    }
+  }
+
+  // Архив в localStorage: основной ключ после создания нового щита
+  // перезаписывается, поэтому предыдущий проект дополнительно попадает сюда.
+  function archiveCurrentProject() {
+    try {
+      const raw = window.localStorage.getItem(ARCHIVE_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      const archive = Array.isArray(parsed) ? parsed : [];
+      archive.unshift({
+        savedAt: new Date().toISOString(),
+        name: String(project.name || 'Новый щит'),
+        data: buildProjectState()
+      });
+      window.localStorage.setItem(ARCHIVE_STORAGE_KEY, JSON.stringify(archive.slice(0, ARCHIVE_LIMIT)));
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  async function createNewProject() {
+    if (!project) return;
+
+    // 1. Сначала сохраняем ТЕКУЩИЙ проект: localStorage (основной ключ +
+    //    архив) всегда, облако — только если пользователь авторизован.
+    persistProject();
+    archiveCurrentProject();
+    await saveCurrentProjectToCloudSnapshot();
+
+    // 2. Новый чистый проект: одна пустая рейка на 24 модуля.
+    project = createEmptyProject('Новый щит');
+    const freshRail = createRail();
+    freshRail.capacity = MAX_RAIL_CAPACITY;
+    project.rails = [freshRail];
+
+    // 3. Полный сброс состояния редактирования.
+    activeRailId = freshRail.id;
+    devicePickerRailId = null;
+    clearConnectionDraft();
+    clearSelection();
+    selectedConnectionId = null;
+    selectedNoteId = null;
+    selectedMarkingId = null;
+    selectedTapeMarkingId = null;
+    markingClipboard = null;
+    closeMarkingEditor();
+    resetInteractionState();
+    if (dom.projectName) dom.projectName.value = project.name;
+    resetHistory();
+
+    // 4. Сохраняем уже новый проект и перерисовываем холст.
+    persistProject();
+    renderAll();
+    showToast('Новый щит создан. Предыдущий проект сохранён.', 'success', 3600);
+  }
+
+  function openNewProjectDialog() {
+    if (!dom.newProjectDialog) {
+      if (window.confirm('Создать новый щит? Текущий проект будет автоматически сохранен в локальное хранилище (и в облако, если вы авторизованы)')) {
+        createNewProject();
+      }
+      return;
+    }
+    if (typeof dom.newProjectDialog.showModal === 'function') {
+      dom.newProjectDialog.returnValue = 'cancel';
+      if (!dom.newProjectDialog.open) dom.newProjectDialog.showModal();
+    } else {
+      dom.newProjectDialog.setAttribute('open', '');
+    }
+  }
+
+  function onNewProjectDialogClose() {
+    const confirmed = dom.newProjectDialog?.returnValue === 'confirm';
+    if (dom.newProjectDialog) dom.newProjectDialog.returnValue = 'cancel';
+    if (confirmed) createNewProject();
   }
 
   /* ---------------------------- Downloads ----------------------------- */
@@ -11227,6 +11522,38 @@ window.supabaseClient = supabase;
       dom.paramsToggle.addEventListener('change', onParamsToggleChange);
     }
     if (dom.addRail) dom.addRail.addEventListener('click', addRail);
+
+    // «+ Добавить прибор»: выбор из библиотеки с поиском, установка в первый
+    // свободный слот конкретной рейки.
+    if (dom.addDevice) {
+      dom.addDevice.addEventListener('click', () => {
+        openDeviceDialog(targetRailForDevice()?.id);
+      });
+    }
+    if (dom.deviceSearch) {
+      dom.deviceSearch.addEventListener('input', (event) => renderDeviceList(event.target.value));
+    }
+    if (dom.deviceList) dom.deviceList.addEventListener('click', onDeviceListClick);
+    if (dom.deviceDialogClose) {
+      dom.deviceDialogClose.addEventListener('click', closeDeviceDialog);
+    }
+    if (dom.deviceDialogCancel) {
+      dom.deviceDialogCancel.addEventListener('click', closeDeviceDialog);
+    }
+    if (dom.deviceDialog) {
+      dom.deviceDialog.addEventListener('click', (event) => {
+        if (event.target === dom.deviceDialog) closeDeviceDialog();
+      });
+      dom.deviceDialog.addEventListener('close', () => { devicePickerRailId = null; });
+    }
+
+    // «Новый щит»: предупреждение → автосохранение → чистый проект.
+    if (dom.newProject) dom.newProject.addEventListener('click', openNewProjectDialog);
+    if (dom.newProjectTop) dom.newProjectTop.addEventListener('click', openNewProjectDialog);
+    if (dom.newProjectDialog) {
+      dom.newProjectDialog.addEventListener('close', onNewProjectDialogClose);
+    }
+
     if (dom.addNoteBtn) {
       dom.addNoteBtn.addEventListener('click', () => setNotePlacing(!notePlacing));
     }

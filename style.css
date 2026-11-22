@@ -2058,6 +2058,32 @@ body.is-journal-tab .library-panel {
   color: var(--text);
 }
 
+/* Выбор прибора: рядом с «+ Добавить рейку», над самой рейкой. */
+#add-device {
+  padding: 4px 9px;
+  border: 1px solid var(--success-line);
+  border-radius: 7px;
+  background: var(--success-soft);
+  color: var(--success-text);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+#add-device:hover:not(:disabled) {
+  border-color: var(--success);
+  color: var(--text);
+}
+
+.new-project-btn {
+  border-color: var(--accent-line);
+  color: var(--accent-text);
+}
+
+.new-project-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
 #add-rail:disabled {
   cursor: not-allowed;
   opacity: 0.5;
@@ -3184,6 +3210,45 @@ body.is-panning * {
 .rail-cap-btn.is-disabled:hover .rail-cap-icon,
 .rail-cap-btn.is-disabled:focus-visible .rail-cap-icon {
   stroke: var(--accent-text);
+}
+
+/* Кнопка «+» на самой рейке: открывает выбор прибора для этой рейки.
+   Стоит рядом с блоком [-] N [+], но вне пустых слотов — слоты остаются
+   свободными для модулей и не показывают полупрозрачные плюсы. */
+.rail-add-device {
+  cursor: pointer;
+  outline: none;
+  pointer-events: all;
+}
+
+.rail-add-device-hit {
+  fill: var(--transparent);
+}
+
+.rail-add-device-bg {
+  fill: var(--success-soft);
+  stroke: var(--success-line);
+  stroke-width: 1.2;
+  transition: fill 0.12s ease, stroke 0.12s ease;
+}
+
+.rail-add-device-icon {
+  fill: none;
+  stroke: var(--success-text);
+  stroke-width: 2;
+  stroke-linecap: round;
+  transition: stroke 0.12s ease;
+}
+
+.rail-add-device:hover .rail-add-device-bg,
+.rail-add-device:focus-visible .rail-add-device-bg {
+  fill: var(--success);
+  stroke: var(--success);
+}
+
+.rail-add-device:hover .rail-add-device-icon,
+.rail-add-device:focus-visible .rail-add-device-icon {
+  stroke: var(--on-solid);
 }
 
 .rail-overflow-outline {
@@ -5102,6 +5167,97 @@ body.is-panning * {
   justify-content: flex-end;
   gap: 9px;
   margin-top: 22px;
+}
+
+.dialog-icon-new {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+/* ---------- Выбор прибора для рейки ---------- */
+
+.device-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(720px, calc(100vh - 48px));
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-modal);
+}
+
+.device-dialog::backdrop {
+  background: var(--backdrop);
+  backdrop-filter: blur(3px);
+}
+
+.device-dialog[open] {
+  animation: dialog-in 0.16s ease both;
+}
+
+.device-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 22px 24px 12px;
+}
+
+.device-dialog-head h2 {
+  margin-top: 7px;
+  font-size: 20px;
+}
+
+.device-dialog-subtitle {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.device-dialog-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin: 4px 20px 8px;
+}
+
+.device-dialog-list {
+  display: grid;
+  gap: 4px;
+  max-height: min(400px, 52vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px 14px;
+  scrollbar-color: var(--scroll-thumb) var(--transparent);
+  scrollbar-width: thin;
+}
+
+.device-dialog-list .component-card {
+  min-height: 54px;
+  border-color: var(--border);
+  border-radius: 10px;
+}
+
+.device-dialog-list .component-card:hover {
+  border-color: var(--accent-line);
+  background: var(--surface-hover);
+  transform: none;
+}
+
+.device-dialog-empty {
+  padding: 14px 24px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.device-dialog .dialog-actions {
+  margin: 0;
+  padding: 14px 24px 20px;
+  border-top: 1px solid var(--border);
 }
 
 /* ---------- Облачные проекты (Supabase) ---------- */

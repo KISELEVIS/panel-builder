@@ -266,6 +266,16 @@
               </svg>
             </button>
             <div class="topbar-menu" id="export-menu" role="menu" aria-label="Файл" hidden>
+              <button class="topbar-menu-item" id="new-project" type="button" role="menuitem"
+                      title="Создать новый щит: текущий проект будет автоматически сохранён">
+                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path d="M4.25 3.25h8L15.75 6.75v10a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1v-13a1 1 0 0 1 1-1Z"
+                        stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                  <path d="M10 8v5m-2.5-2.5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                </svg>
+                <span>Новый щит</span>
+              </button>
+              <div class="topbar-menu-separator" role="separator"></div>
               <button class="topbar-menu-item" id="cloud-save" type="button" role="menuitem"
                       title="Сохранить текущий проект в облако (Supabase)">
                 <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -334,6 +344,18 @@
               </button>
             </div>
           </div>
+
+          <!-- Новый щит: дублирует пункт меню «Файл» для быстрого доступа. -->
+          <button class="btn btn-secondary new-project-btn" id="new-project-top" type="button"
+                  aria-label="Новый щит"
+                  title="Создать новый щит: текущий проект будет автоматически сохранён">
+            <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="M4.25 3.25h8L15.75 6.75v10a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1v-13a1 1 0 0 1 1-1Z"
+                    stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              <path d="M10 8v5m-2.5-2.5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+            <span class="btn-text">Новый щит</span>
+          </button>
 
           <!-- Авторизация (Supabase): для гостя блок скрыт, после входа
                показываем email и кнопку «Выйти» в правом углу шапки. -->
@@ -456,6 +478,9 @@
             <div class="connect-status">
               <span id="connection-hint" aria-live="polite">Кликните по порту, чтобы начать провод</span>
               <button class="inline-action" id="cancel-connect" type="button" hidden>Отменить</button>
+              <button class="inline-action add-device-btn" id="add-device" type="button"
+                      aria-label="+ Добавить прибор"
+                      title="Выбрать прибор из библиотеки и поставить его на первый свободный слот рейки">+ Добавить прибор</button>
               <button class="inline-action" id="add-rail" type="button" title="Добавить ещё одну DIN-рейку">+ Добавить рейку</button>
             </div>
           </div>
@@ -1085,6 +1110,56 @@
         <button class="btn btn-danger" type="submit" value="confirm">Очистить</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- Новый щит: перед очисткой холста текущий проект сохраняется локально
+       (и в облако, если пользователь авторизован). -->
+  <dialog class="confirm-dialog" id="new-project-dialog" aria-labelledby="new-project-dialog-title">
+    <form method="dialog">
+      <span class="dialog-icon dialog-icon-new" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M6 3.75h8L18 7.75v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1Z"
+                stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+          <path d="M12 10v6m-3-3h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <h2 id="new-project-dialog-title">Новый щит</h2>
+      <p id="new-project-dialog-text">Создать новый щит? Текущий проект будет автоматически сохранен в локальное хранилище (и в облако, если вы авторизованы)</p>
+      <div class="dialog-actions">
+        <button class="btn btn-secondary" type="submit" value="cancel" autofocus>Отмена</button>
+        <button class="btn btn-estimate" type="submit" value="confirm">Да, создать</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Выбор прибора для конкретной DIN-рейки. Открывается кнопкой
+       «+ Добавить прибор»; найденный модуль встаёт в первый свободный слот. -->
+  <dialog class="device-dialog" id="device-dialog" aria-labelledby="device-dialog-title">
+    <div class="device-dialog-head">
+      <div>
+        <span class="eyebrow"><span class="eyebrow-index">01</span>Библиотека</span>
+        <h2 id="device-dialog-title">Добавить прибор</h2>
+        <p class="device-dialog-subtitle" id="device-dialog-subtitle"></p>
+      </div>
+      <button class="estimate-close" id="device-dialog-close" type="button"
+              aria-label="Закрыть окно" title="Закрыть">×</button>
+    </div>
+    <div class="device-dialog-search">
+      <span class="search-icon" aria-hidden="true">
+        <svg viewBox="0 0 20 20" fill="none">
+          <circle cx="8.8" cy="8.8" r="5.3" stroke="currentColor" stroke-width="1.6"/>
+          <path d="m12.8 12.8 3.4 3.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <label class="visually-hidden" for="device-search">Поиск прибора по названию или категории</label>
+      <input class="library-search-input" id="device-search" type="search"
+             placeholder="Поиск: автомат, УЗО, клеммы, QF…" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="device-dialog-list" id="device-list" role="list" aria-label="Приборы библиотеки"></div>
+    <p class="device-dialog-empty" id="device-empty" hidden>Ничего не найдено. Попробуйте «автомат» или «клеммы».</p>
+    <div class="dialog-actions">
+      <button class="btn btn-secondary" id="device-dialog-cancel" type="button">Отмена</button>
+    </div>
   </dialog>
 
   <!-- «Мои проекты»: список проектов текущего пользователя. Строки, даты
