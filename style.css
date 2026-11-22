@@ -85,6 +85,15 @@
   --canvas-bg: #05080f;
   --canvas-vignette: rgba(0, 0, 0, 0.56);
 
+  /* Стикеры (текстовые заметки на свободном холсте) */
+  --note-bg: #fde68a;
+  --note-fold: #fcd34d;
+  --note-border: #b45309;
+  --note-text: #422006;
+  --note-text-muted: #92610b;
+  --note-shadow: rgba(2, 6, 23, 0.55);
+  --note-selected: #f59e0b;
+
   /* DIN-рейка */
   --rail-edge: #dbe3ec;
   --rail-hole: #0a0f17;
@@ -729,6 +738,28 @@ h2 {
 .group-btn:not(:disabled) {
   border-color: var(--accent-line);
   color: var(--accent-text);
+}
+
+/* Кнопка «Добавить заметку»: активное состояние означает, что следующий
+   клик по холсту поставит один стикер, после чего режим сбрасывается сам.
+   Отмена: Esc, повторный клик по кнопке или клик вне холста. */
+.add-note-btn {
+  border-color: var(--warning-line);
+  color: var(--warning-text);
+}
+
+.add-note-btn:hover:not(:disabled) {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+  color: var(--text);
+}
+
+.add-note-btn.is-active,
+.add-note-btn[aria-pressed="true"] {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  box-shadow: 0 0 0 2px var(--warning-soft);
 }
 
 /* Выпадающее меню «Экспорт». Позиционируется через position: fixed (JS
@@ -2457,6 +2488,90 @@ body.is-panning * {
   cursor: grabbing !important;
   user-select: none;
   -webkit-user-select: none;
+}
+
+/* ---------- Стикеры на холсте ----------
+   Группа #layer-notes лежит поверх всех слоёв. Стикер тащится свободно,
+   не привязан к рейке и не участвует в групповом выделении модулей. */
+.note {
+  cursor: grab;
+}
+
+.note-shadow {
+  fill: var(--note-shadow);
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.note-paper {
+  fill: var(--note-bg);
+  stroke: var(--note-border);
+  stroke-width: 1.2;
+}
+
+.note-fold {
+  fill: var(--note-fold);
+  stroke: var(--note-border);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.note-text {
+  fill: var(--note-text);
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 600;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.note-placeholder {
+  fill: var(--note-text-muted);
+  font-size: 11px;
+  font-style: italic;
+  font-weight: 500;
+}
+
+.note.selected .note-paper {
+  stroke: var(--note-selected);
+  stroke-width: 2.4;
+}
+
+.note-delete {
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.14s ease;
+}
+
+.note:hover .note-delete,
+.note.selected .note-delete,
+.note-delete:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.note-delete-bg {
+  fill: var(--danger-strong);
+}
+
+.note-delete-mark {
+  fill: none;
+  stroke: var(--on-solid);
+  stroke-width: 1.6;
+  pointer-events: none;
+}
+
+/* Режим добавления: курсор везде на холсте превращается в перекрестие. */
+.is-note-placing .panel-canvas,
+.is-note-placing .panel-canvas * {
+  cursor: crosshair !important;
+}
+
+.canvas-shell.is-note-placing {
+  border-color: var(--warning-line);
+  box-shadow: 0 0 0 3px var(--warning-soft), var(--shadow-card);
 }
 
 /* ---------- Empty state / alerts ---------- */
@@ -5533,9 +5648,12 @@ body.is-dragging * {
    ========================================================= */
 
 @media print {
+  /* Единый печатный шаблон: A4 альбомная ориентация и НУЛЕВЫЕ поля.
+     Любые поля страницы добавили бы масштабирование «по размеру страницы»
+     и нарушили бы реальный масштаб 1:1 (1 модуль = 18 мм). */
   @page {
     size: A4 landscape;
-    margin: 12mm;
+    margin: 0;
   }
 
   html,
@@ -5575,11 +5693,12 @@ body.is-dragging * {
     display: none !important;
   }
 
-  /* Кабельный журнал — печать по умолчанию. */
+  /* Кабельный журнал — печать по умолчанию. Поля задаются внутренним
+     padding, потому что @page теперь обнулены ради масштаба 1:1 наклеек. */
   .journal-print-sheet {
     display: block !important;
     margin: 0;
-    padding: 0;
+    padding: 12mm !important;
     background: #fff !important;
     color: #000 !important;
     font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
@@ -5593,7 +5712,7 @@ body.is-dragging * {
   body.print-estimate .estimate-print-sheet {
     display: block !important;
     margin: 0;
-    padding: 0;
+    padding: 12mm !important;
     background: #fff !important;
     color: #000 !important;
     font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
@@ -5740,5 +5859,2030 @@ body.is-dragging * {
     border-top: 2px solid #000;
     font-size: 11pt;
     font-weight: 700;
+  }
+}
+
+/* =========================================================
+   МАРКИРОВКА — лист наклеек в масштабе 1:1
+   ========================================================= */
+
+.btn-marking {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.btn-marking:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--on-solid);
+}
+
+/* На вкладке маркировки библиотека не нужна: лист занимает всю ширину. */
+body.is-marking-tab .layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body.is-marking-tab .library-panel {
+  display: none;
+}
+
+.marking-view {
+  gap: 15px;
+}
+
+/* Яркое предупреждение о масштабе 1:1 — только на вкладке «Лист 1:1». */
+.marking-print-warning {
+  display: none;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 14px;
+  border: 1px solid var(--warning-line);
+  border-left: 4px solid var(--warning);
+  border-radius: 12px;
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.marking-view[data-mode="sheet"] .marking-print-warning {
+  display: flex;
+}
+
+.marking-print-warning-icon {
+  width: 19px;
+  height: 19px;
+  flex: 0 0 auto;
+  color: var(--warning);
+}
+
+.marking-print-warning strong {
+  color: var(--warning);
+  font-weight: 800;
+}
+
+.marking-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding: 1px 2px;
+}
+
+.marking-subtitle {
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.marking-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+/* Переключатель «Печатать легенду» в верхней панели вкладки. */
+.marking-legend-toggle {
+  min-height: 30px;
+}
+
+.marking-legend-toggle .sim-toggle-state {
+  display: inline;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.marking-legend-toggle .sim-toggle-input:checked ~ .sim-toggle-copy .sim-toggle-state {
+  color: var(--success-text);
+}
+
+.marking-settings {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 14px 22px;
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.marking-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.marking-setting > label,
+.marking-setting-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.marking-input {
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--field-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.marking-input:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.marking-setting select.marking-input {
+  min-width: 132px;
+}
+
+.marking-margin-grid {
+  display: flex;
+  gap: 8px;
+}
+
+.marking-margin-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.marking-margin-grid .marking-input {
+  width: 58px;
+  text-align: center;
+}
+
+.marking-ruler-toggle {
+  margin-left: auto;
+}
+
+.marking-reset {
+  min-height: 32px;
+  font-size: 12px;
+}
+
+.marking-scale-note {
+  margin: 0 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.marking-scale-note strong {
+  color: var(--accent-text);
+}
+
+.marking-sheet-wrap {
+  overflow: auto;
+  max-height: 72vh;
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-4);
+  box-shadow: inset 0 2px 16px var(--shadow-color);
+}
+
+.marking-sheet-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+  min-width: min-content;
+}
+
+/* Лист: реальные миллиметры и реальные отступы. В печати padding убирается,
+   потому что те же отступы задаются правилом @page. */
+.marking-sheet {
+  position: relative;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: var(--sheet-w);
+  height: var(--sheet-h);
+  padding: var(--pad-top) var(--pad-right) var(--pad-bottom) var(--pad-left);
+  background: #fff;
+  color: #000;
+  box-shadow: 0 12px 34px var(--shadow-strong);
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+}
+
+.marking-sheet-label {
+  position: absolute;
+  right: 2mm;
+  bottom: 1mm;
+  color: #94a3b8;
+  font-size: 2.4mm;
+}
+
+/* ---------- Лист 1:1: реальная страница А4 ----------
+   Та же разметка рядов, что и на «Ленте», но внутри физического листа.
+   Отступы задаются именно этому контейнеру (padding в мм), поэтому на
+   экране и в печати получается один и тот же лист масштаба 1:1. */
+.a4-page {
+  position: relative;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: var(--sheet-w, 210mm);
+  height: var(--sheet-h, 297mm);
+  padding: var(--pad-top, 12mm) var(--pad-right, 12mm)
+           var(--pad-bottom, 12mm) var(--pad-left, 12mm);
+  overflow: hidden;
+  background: #fff;
+  color: #000;
+  box-shadow: 0 12px 34px var(--shadow-strong);
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+}
+
+.a4-page-inner {
+  display: flex;
+  box-sizing: border-box;
+  flex-direction: column;
+  height: 100%;
+}
+
+.a4-rows {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5mm;
+  min-height: 0;
+}
+
+/* Лист 1:1: у каждой DIN-рейки — отдельный ряд. Внутри ряда наклейки и
+   заглушки идут строго друг за другом по горизонтали, без переноса.
+   Внешний вид самих наклеек (.print-sticker) остаётся прежним. */
+.sheet-rail-row {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.sheet-rail-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 2mm;
+  margin: 0 0 2mm 1mm;
+  color: #000;
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+}
+
+.sheet-rail-name {
+  color: #000;
+  font-size: 3mm;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.sheet-rail-meta {
+  color: #444;
+  font-size: 2.3mm;
+  white-space: nowrap;
+}
+
+.sheet-continuation {
+  padding: 0.3mm 1mm;
+  border: 0.2mm solid #000;
+  border-radius: 0.8mm;
+  color: #000;
+  font-size: 2.2mm;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.sheet-rail-track {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+/* Невидимая заглушка пустого слота: ровно 18 мм, без рамки и заливки. */
+.sheet-spacer {
+  display: block;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: var(--slot-width, 18mm);
+  height: 14mm;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.a4-page .marking-tape {
+  gap: 1mm;
+  min-width: 0;
+}
+
+.a4-empty {
+  margin: 0;
+  color: #64748b;
+  font-size: 3mm;
+}
+
+.a4-page-label {
+  position: absolute;
+  right: 3mm;
+  bottom: 1mm;
+  color: #94a3b8;
+  font-size: 2.4mm;
+  pointer-events: none;
+}
+
+.a4-footer {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 1mm;
+  margin-top: auto;
+}
+
+/* На бумаге рейка — это только направляющая для резки, без металлического
+   вида редактора. Сами наклейки остаются чёрно-белыми и в масштабе 1:1. */
+.a4-page .marking-rail {
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none !important;
+  box-shadow: none !important;
+}
+
+.a4-page .marking-rail::before,
+.a4-page .marking-rail::after {
+  display: none;
+}
+
+.a4-page .tape-rail-row {
+  min-width: 0;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.a4-page .tape-rail-heading {
+  color: #000;
+}
+
+.a4-page .tape-rail-name,
+.a4-page .tape-rail-meta {
+  color: #000;
+}
+
+.tape-continuation {
+  padding: 0.4mm 1mm;
+  border: 0.2mm solid #000;
+  border-radius: 0.8mm;
+  color: #000;
+  font-size: 2.4mm;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.a4-page .tape-cell {
+  background: #fff !important;
+  border-color: #000 !important;
+  color: #000 !important;
+  box-shadow: none !important;
+  outline: 0 !important;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.a4-page .tape-zone-top,
+.a4-page .tape-brand,
+.a4-page .tape-model,
+.a4-page .tape-rating,
+.a4-page .tape-desc-text {
+  color: #000 !important;
+}
+
+.a4-page .tape-spacer {
+  border-right-color: #94a3b8;
+  background: none !important;
+  color: #475569;
+}
+
+.a4-page .tape-group-label {
+  border-color: #000 !important;
+  background: #fff !important;
+  color: #000 !important;
+}
+
+/* Бирки проводов есть в общем HTML, но на ленте они не нужны. */
+.marking-tape .a4-wire-tags {
+  display: none;
+}
+
+.a4-page .marking-tape .a4-wire-tags {
+  display: block;
+}
+
+.a4-wire-heading {
+  margin: 0 0 1.5mm;
+  color: #000;
+  font-size: 3mm;
+  font-weight: 700;
+}
+
+.a4-wire-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 2mm;
+}
+
+.a4-page .marking-sticker.is-flow {
+  position: relative;
+  left: auto;
+  top: auto;
+  flex: 0 0 auto;
+}
+
+.a4-page .marking-sticker.is-selected {
+  outline-color: #000;
+}
+
+/* Слишком длинный фрагмент рейки уменьшается до ширины листа. */
+.tape-rail-scale {
+  position: relative;
+  width: var(--scaled-w);
+  height: var(--scaled-h);
+}
+
+.tape-rail-scale > .marking-rail {
+  transform: scale(var(--rail-scale));
+  transform-origin: top left;
+}
+
+/* Нижние блоки в листе идут потоком, а не абсолютно, как в старом листе. */
+.a4-page .marking-ruler,
+.a4-page .marking-legend,
+.a4-page .marking-scale-marker {
+  position: static;
+}
+
+.a4-page .marking-legend {
+  width: 100mm;
+}
+
+.marking-ruler {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100mm;
+  height: 11mm;
+  color: #000;
+  font-size: 2.3mm;
+  line-height: 1.1;
+  pointer-events: none;
+}
+
+.marking-ruler-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100mm;
+  height: 2.2mm;
+  border-left: 0.25mm solid #000;
+  border-right: 0.25mm solid #000;
+  background-image: repeating-linear-gradient(
+    to right,
+    #000 0,
+    #000 0.25mm,
+    transparent 0.25mm,
+    transparent 10mm
+  );
+}
+
+.marking-ruler-label {
+  position: absolute;
+  left: 0;
+  top: 3mm;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.marking-ruler-note {
+  position: absolute;
+  left: 0;
+  top: 6.5mm;
+  color: #555;
+  font-size: 2mm;
+  white-space: nowrap;
+}
+
+/* Легенда и контрольный размер внизу печатного листа. Оба блока
+   абсолютно позиционируются внутри .marking-sheet: легенда над
+   контрольным маркером, маркер — под всеми наклейками. */
+.marking-legend {
+  position: absolute;
+  left: 0;
+  bottom: calc(var(--marker-h, 17mm) + 1mm);
+  box-sizing: border-box;
+  width: 100%;
+  padding-top: 1.2mm;
+  border-top: 0.2mm solid #bbb;
+  background: #fff;
+  color: #000;
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+.marking-legend-title {
+  margin-bottom: 0.8mm;
+  font-size: 2.8mm;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.marking-legend-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 3mm;
+  row-gap: 0.6mm;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.marking-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.8mm;
+  min-width: 0;
+  font-size: 2.4mm;
+  line-height: 1.1;
+}
+
+.marking-legend-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 4mm;
+  height: 4mm;
+}
+
+.marking-legend-icon svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: #000;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.marking-legend-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.marking-scale-marker {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  box-sizing: border-box;
+  width: 100mm;
+  min-height: var(--marker-h, 17mm);
+  background: #fff;
+  color: #000;
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+}
+
+/* Сама контрольная линия: ровно 100 мм и в печати, и на экране. */
+.marking-scale-marker-line {
+  position: relative;
+  display: block;
+  width: 100mm;
+  height: 0;
+  border-top: 0.4mm solid #000;
+}
+
+.marking-scale-marker-line::before,
+.marking-scale-marker-line::after {
+  content: "";
+  position: absolute;
+  top: -1.2mm;
+  width: 0;
+  height: 2mm;
+  border-left: 0.3mm solid #000;
+}
+
+.marking-scale-marker-line::before { left: 0; }
+.marking-scale-marker-line::after { right: 0; }
+
+.marking-scale-marker-text {
+  display: block;
+  margin-top: 1.4mm;
+  font-size: 2.2mm;
+  line-height: 1.15;
+}
+
+.marking-sticker {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 0.8mm;
+  margin: 0;
+  padding: 0.7mm 1mm;
+  border: 0.25mm dashed #94a3b8;
+  border-radius: 0.6mm;
+  background: #fff;
+  color: #000;
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+  text-align: left;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.marking-sticker:hover {
+  border-color: var(--accent);
+}
+
+.marking-sticker.is-selected {
+  outline: 0.7mm solid var(--accent);
+  outline-offset: 0.3mm;
+  z-index: 3;
+}
+
+.marking-sticker.is-copy {
+  border-style: dotted;
+}
+
+.marking-sticker.is-group {
+  border-style: double;
+  border-width: 0.6mm;
+}
+
+.marking-sticker.is-wire {
+  background: #fffef5;
+}
+
+.sticker-icon {
+  display: block;
+  flex: 0 0 auto;
+  width: 5.5mm;
+  height: 5.5mm;
+  opacity: 0.8;
+}
+
+.sticker-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: #000;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sticker-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  gap: 0.3mm;
+}
+
+.sticker-main,
+.sticker-sub,
+.sticker-brand {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sticker-main {
+  font-size: 3.1mm;
+  font-weight: 700;
+  line-height: 1.05;
+}
+
+.sticker-sub {
+  font-size: 2.2mm;
+  line-height: 1.05;
+}
+
+.sticker-brand {
+  font-size: 1.9mm;
+  color: #444;
+}
+
+/* Широкая наклейка многополюсного модуля: текст по центру, без пустого края. */
+.marking-sticker.is-wide .sticker-main,
+.marking-sticker.is-wide .sticker-sub,
+.marking-sticker.is-wide .sticker-brand {
+  text-align: center;
+}
+
+.marking-sticker.is-wire .sticker-main {
+  font-size: 2.6mm;
+}
+
+/* Вертикальная ориентация: подписи идут снизу вверх. */
+.marking-sticker.is-vertical {
+  flex-direction: column;
+  gap: 0.5mm;
+}
+
+.marking-sticker.is-vertical .sticker-copy {
+  flex-direction: row-reverse;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0.8mm;
+}
+
+.marking-sticker.is-vertical .sticker-main,
+.marking-sticker.is-vertical .sticker-sub,
+.marking-sticker.is-vertical .sticker-brand {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+}
+
+/* ---------- Лист 1:1: минималистичная печатная наклейка ----------
+   Отдельный шаблон от редактора ленты: белый фон, тонкая пунктирная
+   обводка для вырезания ножницами и компактный чёрный текст. Объёмные
+   цветные карточки .tape-cell остаются только на вкладке «Лента». */
+/* Компактная ГОРИЗОНТАЛЬНАЯ наклейка листа 1:1.
+   Две зоны: маленькая иконка слева и текстовый блок справа (тег / название /
+   бренд). Ширина жёстко привязана к числу модулей: 1P = 18 мм, 2P = 36 мм,
+   3P = 54 мм. Все размеры — в миллиметрах, поэтому на печати без масштабирования
+   страницы получается ровно 1:1. */
+.print-sticker {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5mm;
+  box-sizing: border-box;
+  /* 18 мм на каждый модуль DIN — масштаб через CSS-переменную. */
+  width: calc(18mm * var(--module-width, 1));
+  height: 14mm;
+  margin: 0;
+  padding: 1mm;
+  overflow: hidden;
+  border: 1px dashed #999;
+  border-radius: 0;
+  background: #fff;
+  color: #000;
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+  text-align: left;
+  appearance: none;
+  -webkit-appearance: none;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+/* Левая зона: иконка ~4.5 мм. */
+.print-sticker-icon {
+  display: grid;
+  flex: 0 0 4.5mm;
+  width: 4.5mm;
+  height: 4.5mm;
+  place-items: center;
+  color: #000;
+}
+
+.print-sticker-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: #000;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Правая зона: тег (жирно), название (мелко), бренд (внизу). */
+.print-sticker-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0;
+  min-width: 0;
+  /* Небольшой запас справа, чтобы текст не заходил под цветную полоску. */
+  padding-right: 0.8mm;
+  overflow: hidden;
+}
+
+.print-sticker-tag,
+.print-sticker-desc,
+.print-sticker-meta {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  color: #000;
+  line-height: 1.05;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.print-sticker-tag {
+  font-size: 2.4mm;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.print-sticker-desc {
+  font-size: 1.8mm;
+  font-weight: 600;
+}
+
+.print-sticker-meta {
+  font-size: 1.6mm;
+  color: #444;
+}
+
+/* Цветовая метка — тонкая полоска по правому краю, не занимает место
+   в потоке и не мешает двум основным зонам наклейки. */
+.print-sticker-color {
+  position: absolute;
+  top: 1mm;
+  right: 1mm;
+  bottom: 1mm;
+  width: 0.8mm;
+  padding: 0;
+  border: 0;
+  background: var(--sticker-color, #22c55e);
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+  pointer-events: none;
+}
+
+/* Бирки проводов используют ту же компактную горизонтальную вёрстку. */
+.print-sticker.is-wire {
+  height: 14mm;
+  padding: 1mm;
+}
+
+.marking-hint {
+  margin: 0 2px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+/* ---------- Встроенный редактор наклейки ---------- */
+
+.marking-editor {
+  position: fixed;
+  z-index: 120;
+  width: 326px;
+  max-height: min(84vh, 720px);
+  overflow: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-modal);
+}
+
+.marking-editor[hidden] {
+  display: none !important;
+}
+
+.marking-editor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.marking-editor-head strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.marking-editor-close {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.marking-editor-close:hover {
+  color: var(--text);
+}
+
+.marking-editor-body {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 13px 14px;
+}
+
+.marking-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.marking-editor-row {
+  display: grid;
+  grid-template-columns: 1fr 96px;
+  gap: 10px;
+}
+
+.marking-icon-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.marking-icon-option {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--field-bg);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.marking-icon-option:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.marking-icon-option.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.marking-icon-option svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.marking-editor-meta {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.marking-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 11px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.marking-editor-actions .btn {
+  flex: 1 1 auto;
+  padding: 6px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* ---------- Печать маркировки ---------- */
+
+.marking-print-sheet {
+  display: none;
+}
+
+@media print {
+  /* По умолчанию (журнал/смета) лист маркировки не печатается. */
+  .marking-print-sheet {
+    display: none !important;
+  }
+
+  body.print-marking .journal-print-sheet,
+  body.print-marking .estimate-print-sheet {
+    display: none !important;
+  }
+
+  body.print-marking .marking-print-sheet {
+    display: block !important;
+    margin: 0;
+    padding: 0;
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  /* В печати остаётся только .a4-page. Поля страницы обнулены в @page,
+     поэтому реальные отступы задаёт padding именно этого контейнера. */
+  body.print-marking .marking-print-sheet .a4-page {
+    width: var(--sheet-w) !important;
+    height: var(--sheet-h) !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: var(--pad-top) var(--pad-right) var(--pad-bottom) var(--pad-left) !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: #fff !important;
+    color: #000 !important;
+    break-after: page;
+    page-break-after: always;
+  }
+
+  body.print-marking .marking-print-sheet .a4-page:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  /* Ни один ряд рейки не должен разрываться между страницами. */
+  body.print-marking .marking-print-sheet .tape-rail-row,
+  body.print-marking .marking-print-sheet .sheet-rail-row {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  body.print-marking .marking-print-sheet .a4-page-label,
+  body.print-marking .marking-sheet-label {
+    display: none !important;
+  }
+
+  body.print-marking .marking-sticker {
+    border-color: #000 !important;
+    box-shadow: none !important;
+  }
+
+  body.print-marking .marking-sticker.is-selected {
+    outline: 0 !important;
+  }
+
+  /* Печатные наклейки листа 1:1: только белый фон и тонкая пунктирная
+     рамка 1px dashed #999 — никаких теней, объёма и цветных заливок. */
+  body.print-marking .print-sticker {
+    border: 1px dashed #999 !important;
+    background: #fff !important;
+    color: #000 !important;
+    box-shadow: none !important;
+    outline: 0 !important;
+  }
+
+  body.print-marking .print-sticker-icon svg {
+    stroke: #000 !important;
+  }
+
+  /* Защита масштаба: на печатном листе не должно быть ни одного transform
+     или zoom — иначе миллиметры превращаются в пиксели браузера и 1:1 ломается. */
+  .marking-print-sheet,
+  .marking-print-sheet .a4-page,
+  .marking-print-sheet .a4-page-inner,
+  .marking-print-sheet .a4-rows,
+  .marking-print-sheet .sheet-rail-row,
+  .marking-print-sheet .sheet-rail-heading,
+  .marking-print-sheet .sheet-rail-track,
+  .marking-print-sheet .sheet-spacer,
+  .marking-print-sheet .print-sticker {
+    transform: none !important;
+    zoom: 1 !important;
+  }
+
+  /* Предупреждение — только для экрана, в распечатку не попадает. */
+  .marking-print-warning {
+    display: none !important;
+  }
+
+  body.print-marking .marking-ruler-note {
+    color: #000 !important;
+  }
+
+  /* Легенда и контрольный маркер печатаются на белом фоне чёрным текстом.
+     Ширина линии задана в мм и не зависит от масштабирования страницы. */
+  body.print-marking .marking-legend,
+  body.print-marking .marking-scale-marker,
+  body.print-tape .marking-legend,
+  body.print-tape .marking-scale-marker {
+    background: #fff !important;
+    color: #000 !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  body.print-marking .marking-legend,
+  body.print-tape .marking-legend {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  body.print-marking .marking-legend-title {
+    color: #000 !important;
+  }
+
+  /* Элементы интерфейса (в том числе чекбокс легенды) в печать не идут. */
+  .marking-legend-toggle {
+    display: none !important;
+  }
+}
+
+/* ---------- Адаптив ---------- */
+
+@media (max-width: 1180px) {
+  .marking-actions .btn span {
+    font-size: 11px;
+  }
+
+  .marking-ruler-toggle {
+    margin-left: 0;
+  }
+}
+
+/* =========================================================================
+   РЕДАКТОР МАРКИРОВКИ — лента на DIN-рейке
+   Все размеры ячеек заданы в миллиметрах: 1 модуль DIN = 18 мм.
+   ========================================================================= */
+
+.marking-mode-switch {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+
+.marking-mode-btn {
+  min-height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.marking-mode-btn:hover:not(.is-active) {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.marking-mode-btn.is-active {
+  background: var(--accent-strong);
+  color: var(--accent-contrast);
+}
+
+.marking-view[data-mode="sheet"] .marking-studio {
+  display: none;
+}
+
+.marking-view[data-mode="tape"] .marking-sheet-fold {
+  margin-top: 2px;
+}
+
+.marking-studio {
+  display: grid;
+  grid-template-columns: 218px minmax(0, 1fr) 292px;
+  align-items: start;
+  gap: 16px;
+}
+
+.marking-tools-panel,
+.marking-props-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+
+.marking-panel-head {
+  padding: 16px 15px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.marking-panel-head h2 {
+  margin: 7px 0 0;
+  font-size: 17px;
+}
+
+.marking-panel-head p {
+  margin: 7px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.marking-tools-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 12px;
+}
+
+.marking-tool {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 62px;
+  padding: 6px 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease,
+    color 0.14s ease, transform 0.14s ease;
+}
+
+.marking-tool:hover {
+  border-color: var(--accent-line);
+  background: var(--surface-hover);
+  color: var(--text);
+  transform: translateY(-1px);
+}
+
+.marking-tool.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.marking-tool-glyph {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  font-size: 19px;
+  line-height: 1;
+}
+
+.marking-tool-glyph svg {
+  width: 23px;
+  height: 23px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.marking-tool-label {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 9.5px;
+  font-weight: 650;
+  line-height: 1.1;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marking-tools-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.marking-tool-hint {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marking-tool-clear {
+  min-height: 28px;
+  padding: 4px 9px;
+  font-size: 11px;
+}
+
+/* ---------- Центр: DIN-рейка и лента наклеек ---------- */
+
+.marking-tape-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+
+.marking-tape-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 1px 2px;
+}
+
+.marking-tape-toolbar h2 {
+  margin: 7px 0 0;
+  font-size: 17px;
+}
+
+.marking-tape-scale {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  border: 1px solid var(--accent-line);
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: 10px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.marking-tape-viewport {
+  overflow: auto;
+  max-height: 62vh;
+  padding: 18mm 12mm;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 50% 0%, var(--page-glow-accent), var(--transparent) 26rem),
+    var(--surface-4);
+  box-shadow: inset 0 2px 18px var(--shadow-color);
+  scrollbar-color: var(--scroll-thumb) var(--transparent);
+  scrollbar-width: thin;
+}
+
+.marking-tape-viewport.is-picking .tape-cell {
+  cursor: copy;
+}
+
+.marking-rail {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 100%;
+  min-height: 52mm;
+  padding: 4mm 8mm;
+  border: 0.4mm solid var(--rail-metal-deep);
+  border-radius: 1mm;
+  background:
+    linear-gradient(180deg, var(--rail-metal-highlight) 0, var(--rail-metal-1) 12%, var(--rail-metal-2) 45%, var(--rail-metal-deep) 100%);
+  box-shadow: 0 6px 16px var(--shadow-color), inset 0 1mm 1mm var(--rail-profile-light);
+}
+
+.marking-rail::before,
+.marking-rail::after {
+  position: absolute;
+  left: 2mm;
+  right: 2mm;
+  height: 2.2mm;
+  background-image: radial-gradient(ellipse at center, var(--rail-hole) 0 45%, var(--transparent) 48%);
+  background-size: 8mm 2.2mm;
+  background-repeat: repeat-x;
+  content: "";
+  pointer-events: none;
+}
+
+.marking-rail::before { top: 0.7mm; }
+.marking-rail::after { bottom: 0.7mm; }
+
+/* Лента состоит из независимых рядов — по одному на каждую DIN-рейку.
+   Зазор между рядами оставляет место, чтобы разрезать наклейки после печати. */
+.marking-tape {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12mm;
+  min-width: 100%;
+}
+
+.tape-rail-row {
+  min-width: 100%;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.tape-rail-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 2mm;
+  margin: 0 0 2mm 1mm;
+  font-family: var(--font);
+}
+
+.tape-rail-name {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.tape-rail-meta {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+/* Полоса наклеек одной рейки: ячейки идут строго друг за другом. */
+.tape-rail-track {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: stretch;
+  height: 44mm;
+  min-width: 36mm;
+}
+
+/* Заглушка на месте пропущенных слотов: 1 слот = 18 мм. */
+.tape-spacer {
+  display: flex;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: var(--cell-w);
+  height: 44mm;
+  align-items: center;
+  justify-content: center;
+  border-right: 0.25mm dashed #94a3b8;
+  background: repeating-linear-gradient(135deg, rgba(148, 163, 184, 0.1) 0 1mm, transparent 1mm 3mm);
+  color: #94a3b8;
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+  font-size: 2mm;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.tape-cell {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: var(--cell-w);
+  height: 44mm;
+  margin: 0;
+  padding: 0.4mm;
+  /* Тонкая рамка, правая сторона чуть заметнее — линия разреза между ячейками. */
+  border: 0.2mm solid #475569;
+  border-right: 0.35mm solid #475569;
+  border-radius: 0.6mm;
+  background: #f8fafc;
+  color: #0f172a;
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+  text-align: left;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  transition: outline-color 0.14s ease, box-shadow 0.14s ease;
+}
+
+.tape-cell:hover {
+  box-shadow: 0 0 0 0.6mm var(--accent-soft);
+}
+
+.tape-cell.is-selected {
+  z-index: 4;
+  outline: 0.8mm solid var(--accent);
+  outline-offset: 0.35mm;
+}
+
+.tape-cell.is-grouped .tape-zone-desc {
+  background: #fff7ed;
+}
+
+/* Широкие модули (2P, 3P…): центрируем текст по всей ширине наклейки,
+   чтобы справа не оставалось пустого места. */
+.tape-cell.is-wide .tape-zone-top {
+  align-items: center;
+  text-align: center;
+}
+
+.tape-cell.is-wide .tape-desc-text {
+  font-size: 2.6mm;
+}
+
+.tape-zone {
+  display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.tape-zone-top {
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.2mm;
+  height: 13mm;
+  padding: 0.5mm 0.8mm;
+  overflow: hidden;
+  border-bottom: 0.2mm solid #cbd5e1;
+}
+
+.tape-brand,
+.tape-model,
+.tape-rating {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tape-brand {
+  color: #334155;
+  font-size: 1.9mm;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.tape-model {
+  color: #0f172a;
+  font-size: 2.4mm;
+  font-weight: 700;
+  line-height: 1.05;
+}
+
+.tape-rating {
+  color: #64748b;
+  font-size: 1.8mm;
+  font-weight: 600;
+}
+
+.tape-zone-icon {
+  align-items: center;
+  justify-content: center;
+  height: 9mm;
+  border-bottom: 0.2mm solid #cbd5e1;
+}
+
+.tape-device-icon {
+  display: grid;
+  width: 6mm;
+  height: 6mm;
+  place-items: center;
+  color: #1e293b;
+}
+
+.tape-device-icon svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tape-zone-tag {
+  align-items: center;
+  justify-content: center;
+  gap: 0.7mm;
+  height: 10mm;
+  padding: 0 0.6mm;
+  border-bottom: 0.2mm solid #cbd5e1;
+}
+
+.tape-tag {
+  display: block;
+  min-width: 0;
+  max-width: calc(100% - 2.6mm);
+  padding: 0.5mm 1mm;
+  overflow: hidden;
+  border: 0.25mm solid #a16207;
+  border-radius: 0.6mm;
+  background: #fde047;
+  color: #422006;
+  font-size: 3mm;
+  font-weight: 800;
+  line-height: 1.05;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tape-color {
+  flex: 0 0 auto;
+  width: 1.8mm;
+  height: 6mm;
+  border: 0.2mm solid rgba(15, 23, 42, 0.35);
+  border-radius: 0.5mm;
+  background: var(--tape-color, #22c55e);
+}
+
+.tape-zone-desc {
+  align-items: center;
+  justify-content: center;
+  gap: 0.6mm;
+  height: 11.6mm;
+  padding: 0.4mm;
+  background: #eef2f7;
+}
+
+.tape-desc-icon {
+  flex: 0 0 auto;
+  display: grid;
+  width: 4mm;
+  height: 4mm;
+  place-items: center;
+  font-size: 3.4mm;
+  line-height: 1;
+  color: #1e293b;
+}
+
+.tape-desc-icon svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tape-desc-text {
+  display: -webkit-box;
+  overflow: hidden;
+  min-width: 0;
+  color: #1e293b;
+  font-size: 2.1mm;
+  font-weight: 700;
+  line-height: 1.06;
+  text-align: center;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.tape-group-label {
+  position: absolute;
+  bottom: 0.4mm;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 11.2mm;
+  padding: 0.3mm 1mm;
+  overflow: hidden;
+  border: 0.25mm dashed #ea580c;
+  border-radius: 0.8mm;
+  background: #fff7ed;
+  color: #7c2d12;
+  font-size: 2.7mm;
+  font-weight: 800;
+  text-align: center;
+  pointer-events: none;
+}
+
+.tape-empty {
+  display: grid;
+  width: 100%;
+  min-width: 90mm;
+  height: 44mm;
+  place-items: center;
+  border: 0.3mm dashed #94a3b8;
+  border-radius: 1mm;
+  background: rgba(255, 255, 255, 0.72);
+  color: #475569;
+  font-family: var(--font);
+  font-size: 12px;
+  text-align: center;
+}
+
+.marking-tape-hint {
+  margin: 0 2px;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* ---------- Справа: свойства ячейки ---------- */
+
+.marking-props-empty {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 34px 18px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.marking-props-empty > span:first-child {
+  font-size: 34px;
+  line-height: 1;
+  opacity: 0.55;
+}
+
+.marking-props-empty strong {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.marking-props-empty span:last-child {
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.marking-props-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 15px 16px;
+}
+
+.marking-props-body .marking-field > span:first-child {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.tape-color-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tape-color-swatch {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.28);
+  cursor: pointer;
+  transition: transform 0.14s ease, border-color 0.14s ease;
+}
+
+.tape-color-swatch:hover {
+  transform: scale(1.1);
+}
+
+.tape-color-swatch.is-active {
+  border-color: var(--text);
+  transform: scale(1.12);
+}
+
+.tape-color-custom {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 9px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.tape-color-custom input {
+  width: 34px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--field-bg);
+  cursor: pointer;
+}
+
+.tape-merge-check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--text-soft);
+  font-size: 11.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.tape-merge-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.marking-props-reset {
+  min-height: 30px;
+  font-size: 11px;
+}
+
+.marking-sheet-fold {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
+}
+
+.marking-sheet-fold > summary {
+  padding: 12px 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+}
+
+.marking-sheet-fold > summary:hover {
+  color: var(--text);
+}
+
+.marking-sheet-fold[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.marking-sheet-fold .marking-settings,
+.marking-sheet-fold .marking-scale-note,
+.marking-sheet-fold .marking-sheet-wrap,
+.marking-sheet-fold .marking-hint {
+  margin: 14px;
+}
+
+.marking-sheet-fold .marking-settings {
+  margin: 14px;
+}
+
+/* ---------- Печать ленты 1:1 ---------- */
+
+.marking-tape-print {
+  display: none;
+}
+
+@media print {
+  body.print-tape .journal-print-sheet,
+  body.print-tape .estimate-print-sheet,
+  body.print-tape .marking-print-sheet {
+    display: none !important;
+  }
+
+  body.print-tape .marking-tape-print {
+    display: block !important;
+    margin: 0;
+    padding: 0;
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  body.print-tape .marking-tape-print .marking-tape {
+    min-width: 0;
+    gap: 12mm;
+  }
+
+  body.print-tape .marking-tape-print .marking-rail {
+    min-width: 0;
+    width: max-content;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none !important;
+    box-shadow: none !important;
+  }
+
+  /* Каждый ряд рейки печатается целиком — не разрываем его между страницами. */
+  body.print-tape .marking-tape-print .tape-rail-row {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  body.print-tape .marking-tape-print .tape-rail-heading {
+    color: #000 !important;
+  }
+
+  body.print-tape .marking-tape-print .tape-rail-name,
+  body.print-tape .marking-tape-print .tape-rail-meta {
+    color: #000 !important;
+  }
+
+  body.print-tape .marking-tape-print .tape-spacer {
+    border-right-color: #94a3b8;
+    background: none !important;
+    color: #64748b;
+  }
+
+  body.print-tape .marking-tape-print .marking-rail::before,
+  body.print-tape .marking-tape-print .marking-rail::after {
+    display: none;
+  }
+
+  body.print-tape .marking-tape-print .tape-cell {
+    box-shadow: none !important;
+    outline: 0 !important;
+    /* Чёткая линия разреза по правой кромке каждой наклейки. */
+    border: 0.25mm solid #000 !important;
+    border-right-width: 0.4mm !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  body.print-tape .marking-tape-print .tape-group-label {
+    border-color: #000 !important;
+    color: #000 !important;
+    background: #fff !important;
+  }
+
+  body.print-tape .marking-tape-print .tape-empty {
+    color: #000 !important;
+  }
+
+  /* В печати ленты легенда и контрольный маркер идут обычным потоком
+     под наклейками (на экране эти блоки абсолютно позиционируются в листе). */
+  body.print-tape .marking-tape-print .marking-legend,
+  body.print-tape .marking-tape-print .marking-scale-marker {
+    position: static;
+  }
+
+  body.print-tape .marking-tape-print .marking-legend {
+    width: 100mm;
+    margin-top: 3mm;
+  }
+
+  body.print-tape .marking-tape-print .marking-scale-marker {
+    margin-top: 2mm;
+  }
+}
+
+/* ---------- Адаптив редактора ---------- */
+
+@media (max-width: 1280px) {
+  .marking-studio {
+    grid-template-columns: 190px minmax(0, 1fr) 262px;
+    gap: 12px;
+  }
+}
+
+@media (max-width: 1080px) {
+  .marking-studio {
+    grid-template-columns: minmax(0, 1fr) 270px;
+  }
+
+  .marking-tools-panel {
+    grid-column: 1 / -1;
+  }
+
+  .marking-tools-list {
+    grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .marking-studio {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .marking-tools-panel,
+  .marking-props-panel {
+    grid-column: auto;
   }
 }

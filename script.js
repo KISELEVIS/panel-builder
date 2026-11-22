@@ -51,6 +51,9 @@
   const STATIC_GROUP_IDS = Object.freeze(['rail-track', 'layer-power-source']);
   const STATIC_GROUP_LAYER_ID = 'layer-power-source';
   const STATIC_GROUP_RAIL_ID = 'rail-track';
+  // Текстовые заметки (стикеры) живут в собственной группе поверх всех слоёв.
+  // У неё нет тумблера в панели «Слои»: заметки всегда видны и не блокируются.
+  const NOTES_GROUP_ID = 'layer-notes';
   // Номинальное фазное напряжение и пределы мощности нагрузки.
   const NOMINAL_VOLTAGE = 230;
   const DEFAULT_LOAD_POWER = 1000;
@@ -67,6 +70,131 @@
   // Примечание в кабельном журнале: то же поле connection.label, что и подпись
   // провода на схеме. 50 символов достаточно и не ломают ширину колонки.
   const MAX_JOURNAL_NOTE_LENGTH = 50;
+  /* -------------------------- Маркировка (1:1) --------------------------
+     Все числа здесь — миллиметры. Ширина одного модуля DIN равна 18 мм,
+     поэтому наклейка на 1P имеет ровно 18 мм и т. д. Высота наклейки
+     12 мм (20 мм при вертикальной надписи), бирка провода — 24 × 8 мм.
+     Шаблон листа задаётся в @page, который генерируется из настроек. */
+  const MM_PER_MODULE = 18;
+  // Компактная горизонтальная наклейка листа 1:1: 14 мм в высоту и зазор 1 мм
+  // между наклейками — плотный поток, максимум наклеек на листе A4.
+  const PRINT_STICKER_HEIGHT_MM = 14;
+  const PRINT_STICKER_GAP_MM = 1;
+  const MARKING_STICKER_HEIGHT_MM = 12;
+  const MARKING_STICKER_VERTICAL_HEIGHT_MM = 20;
+  const MARKING_WIRE_WIDTH_MM = 24;
+  const MARKING_WIRE_HEIGHT_MM = 8;
+  // Высота компактной печатной бирки провода на листе 1:1.
+  const PRINT_WIRE_STICKER_HEIGHT_MM = 12;
+  const MARKING_GAP_X_MM = 2;
+  const MARKING_GAP_Y_MM = 2;
+  // Редактор ленты: каждая рейка — отдельный горизонтальный ряд. Зазор между
+  // рядами оставляет место для разрезания наклеек после печати.
+  const TAPE_RAIL_GAP_MM = 12;
+  const TAPE_CELL_HEIGHT_MM = 44;
+  const TAPE_RAIL_HEADING_MM = 9;
+  // Печатный лист 1:1: у каждой рейки свой ряд (заголовок + полоса наклеек).
+  const SHEET_RAIL_HEADING_MM = 7;
+  const SHEET_RAIL_GAP_MM = 5;
+  const MARKING_RULER_HEIGHT_MM = 11;
+  // Контрольный маркер 100 мм внизу листа и блок «Легенда» над ним.
+  // Высота легенды считается по числу уникальных значков (2 колонки).
+  const MARKING_SCALE_MARKER_HEIGHT_MM = 17;
+  const MARKING_LEGEND_HEADER_MM = 7;
+  const MARKING_LEGEND_ROW_MM = 6;
+  const MARKING_LEGEND_COLUMNS = 2;
+  const MARKING_MAIN_LENGTH = 80;
+  const MARKING_SHEET_SIZES = Object.freeze({
+    A4: { portrait: [210, 297], landscape: [297, 210] },
+    A5: { portrait: [148, 210], landscape: [210, 148] }
+  });
+  const DEFAULT_MARKING_SETTINGS = Object.freeze({
+    sheet: 'A4',
+    orientation: 'portrait',
+    marginTop: 12,
+    marginRight: 12,
+    marginBottom: 12,
+    marginLeft: 12,
+    showRuler: true,
+    printLegend: false
+  });
+  // Пиктограммы на фоне наклейки. Ключ хранится в marking.icon.
+  const MARKING_ICONS = Object.freeze({
+    none: { label: 'Без пиктограммы', svg: '' },
+    light: {
+      label: 'Свет',
+      svg: '<path d="M8 13.5a4 4 0 1 1 8 0c0 1.6-1 2.4-1.6 3.2H9.6C9 15.9 8 15.1 8 13.5Z"/><path d="M10 19h4M10.8 21h2.4"/>'
+    },
+    socket: {
+      label: 'Розетка',
+      svg: '<circle cx="12" cy="12" r="8"/><path d="M9.5 10v3M14.5 10v3M12 15.5h.01"/>'
+    },
+    aircon: {
+      label: 'Кондиционер',
+      svg: '<rect x="3" y="5" width="18" height="7" rx="2"/><path d="M6 8.5h12M7 16c1.2 1.2 2.5 1.2 3.7 0M12.5 16c1.2 1.2 2.5 1.2 3.7 0"/>'
+    },
+    switch: {
+      label: 'Выключатель',
+      svg: '<rect x="5" y="4" width="14" height="16" rx="2"/><path d="M9 14c1.6-3 4.4-3 6-5"/>'
+    },
+    breaker: {
+      label: 'Автомат',
+      svg: '<rect x="6" y="4" width="12" height="16" rx="2"/><path d="M12 16V9M9.5 9h5"/>'
+    },
+    vent: {
+      label: 'Вентиляция',
+      svg: '<circle cx="12" cy="12" r="8"/><path d="M12 12c0-3 3-4 4.5-2.5M12 12c3 0 4 3 2.5 4.5M12 12c0 3-3 4-4.5 2.5M12 12c-3 0-4-3-2.5-4.5"/>'
+    },
+    power: {
+      label: 'Питание',
+      svg: '<path d="M12 3v9"/><path d="M7.2 6.7a7 7 0 1 0 9.6 0"/>'
+    },
+    bell: {
+      label: 'Сигнал',
+      svg: '<path d="M6 16h12l-1.5-2V10a4.5 4.5 0 0 0-9 0v4L6 16Z"/><path d="M10.5 19h3"/>'
+    },
+    computer: {
+      label: 'Компьютер',
+      svg: '<rect x="3" y="5" width="18" height="11" rx="2"/><path d="M8 20h8M12 16v4"/>'
+    },
+    kitchen: {
+      label: 'Кухня',
+      svg: '<path d="M4 11a8 8 0 0 0 16 0H4Z"/><path d="M3 11h18M9 7.5h.01M13 6h.01M16 8h.01"/>'
+    },
+    washer: {
+      label: 'Стиральная машина',
+      svg: '<rect x="4" y="3" width="16" height="18" rx="2"/><circle cx="12" cy="13" r="4"/><path d="M7 6h.01M10 6h.01"/>'
+    },
+    boiler: {
+      label: 'Водонагрев',
+      svg: '<rect x="6" y="4" width="12" height="17" rx="3"/><path d="M9 8h6M12 17c1.2-1.2 2-2.2 2-3.2a2 2 0 1 0-4 0c0 1 .8 2 2 3.2Z"/>'
+    },
+    tv: {
+      label: 'Телевизор',
+      svg: '<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 20h8M12 17v3"/>'
+    },
+    fridge: {
+      label: 'Холодильник',
+      svg: '<rect x="6" y="2.5" width="12" height="19" rx="2"/><path d="M6 9h12M9 5.5v2M9 12v3"/>'
+    }
+  });
+  // Цвета цветовой полосы наклейки (фазы / линии / назначение).
+  const MARKING_TAPE_COLORS = Object.freeze([
+    { value: '#22c55e', label: 'Зелёный' },
+    { value: '#ef4444', label: 'Красный' },
+    { value: '#3b82f6', label: 'Синий' },
+    { value: '#f59e0b', label: 'Жёлтый' },
+    { value: '#8b5cf6', label: 'Фиолетовый' },
+    { value: '#111827', label: 'Чёрный' }
+  ]);
+  const DEFAULT_TAPE_COLOR = MARKING_TAPE_COLORS[0].value;
+  // Стикеры: текст, габариты и число строк, помещающихся на бумажке.
+  const MAX_NOTE_TEXT_LENGTH = 500;
+  const NOTE_WIDTH = 176;
+  const NOTE_HEIGHT = 132;
+  const NOTE_TEXT_MAX_CHARS = 22;
+  const NOTE_TEXT_MAX_LINES = 5;
+  const NOTE_LINE_HEIGHT = 18;
 
   const SVG_WIDTH = 1016;
   const SVG_BASE_HEIGHT = 520;
@@ -410,6 +538,9 @@
     wireLayer: document.getElementById('layer-wires'),
     moduleLayer: document.getElementById('layer-modules'),
     labelLayer: document.getElementById('layer-labels'),
+    // Стикеры рисуются в отдельной группе поверх подписей и проводов.
+    notesLayer: document.getElementById(NOTES_GROUP_ID),
+    addNoteBtn: document.getElementById('add-note'),
     layersPanel: document.getElementById('layers-panel'),
     layersToggle: document.getElementById('layers-toggle'),
     layersList: document.getElementById('layers-list'),
@@ -477,6 +608,62 @@
     journalDownloadCsv: document.getElementById('journal-download-csv'),
     journalPrint: document.getElementById('journal-print'),
     journalPrintSheet: document.getElementById('journal-print-sheet'),
+    // Вкладка «Маркировка».
+    openMarking: document.getElementById('open-marking'),
+    tabMarking: document.getElementById('tab-marking'),
+    markingView: document.getElementById('marking-view'),
+    markingSubtitle: document.getElementById('marking-subtitle'),
+    markingToolsList: document.getElementById('marking-tools-list'),
+    markingToolHint: document.getElementById('marking-tool-hint'),
+    markingToolClear: document.getElementById('marking-tool-clear'),
+    markingTape: document.getElementById('marking-tape'),
+    markingTapeViewport: document.getElementById('marking-tape-viewport'),
+    markingTapePrint: document.getElementById('marking-tape-print'),
+    markingSheetFold: document.getElementById('marking-sheet-fold'),
+    tapePropsEmpty: document.getElementById('marking-props-empty'),
+    tapePropsBody: document.getElementById('marking-props-body'),
+    tapePropsTarget: document.getElementById('marking-props-target'),
+    tapeTagInput: document.getElementById('tape-tag-input'),
+    tapeDescInput: document.getElementById('tape-desc-input'),
+    tapeIconPicker: document.getElementById('tape-icon-picker'),
+    tapeColorSwatches: document.getElementById('tape-color-swatches'),
+    tapeColorCustom: document.getElementById('tape-color-custom'),
+    tapeMergeCheck: document.getElementById('tape-merge-check'),
+    tapePropsMeta: document.getElementById('tape-props-meta'),
+    tapeResetCell: document.getElementById('tape-reset-cell'),
+    markingDownload: document.getElementById('marking-download'),
+    markingSheetArea: document.getElementById('marking-sheet-area'),
+    markingSheetWrap: document.getElementById('marking-sheet-wrap'),
+    markingPrintSheet: document.getElementById('marking-print-sheet'),
+    markingPageStyle: document.getElementById('marking-page-style'),
+    markingAutonumber: document.getElementById('marking-autonumber'),
+    markingExportJson: document.getElementById('marking-export-json'),
+    markingPrint: document.getElementById('marking-print'),
+    markingPdf: document.getElementById('marking-pdf'),
+    markingReset: document.getElementById('marking-reset'),
+    markingSize: document.getElementById('marking-sheet-size'),
+    markingOrientation: document.getElementById('marking-orientation'),
+    markingMarginTop: document.getElementById('marking-margin-top'),
+    markingMarginRight: document.getElementById('marking-margin-right'),
+    markingMarginBottom: document.getElementById('marking-margin-bottom'),
+    markingMarginLeft: document.getElementById('marking-margin-left'),
+    markingRulerToggle: document.getElementById('marking-ruler-toggle-input'),
+    markingRulerState: document.getElementById('marking-ruler-state'),
+    markingPrintLegend: document.getElementById('marking-print-legend'),
+    markingPrintLegendState: document.getElementById('marking-print-legend-state'),
+    markingEditor: document.getElementById('marking-editor'),
+    markingEditorTitle: document.getElementById('marking-editor-title'),
+    markingEditorClose: document.getElementById('marking-editor-close'),
+    markingMainInput: document.getElementById('marking-main-input'),
+    markingTextMode: document.getElementById('marking-text-mode'),
+    markingTextOrientation: document.getElementById('marking-text-orientation'),
+    markingWidthMm: document.getElementById('marking-width-mm'),
+    markingPreset: document.getElementById('marking-preset'),
+    markingIconPicker: document.getElementById('marking-icon-picker'),
+    markingEditorMeta: document.getElementById('marking-editor-meta'),
+    markingClone: document.getElementById('marking-clone'),
+    markingGroup: document.getElementById('marking-group'),
+    markingDelete: document.getElementById('marking-delete'),
     toastRegion: document.getElementById('toast-region'),
     // Контекстное меню (ПКМ) — живёт на уровне body, position: fixed.
     contextMenu: document.getElementById('context-menu'),
@@ -489,15 +676,28 @@
   let project = null;
   // Активная вкладка рабочей области: 'schema' | 'journal'.
   let activeTab = 'schema';
-  // Что печатать: по умолчанию кабельный журнал, кнопка сметы переключает на смету.
+  // Что печатать: по умолчанию кабельный журнал, кнопки сметы/маркировки
+  // переключают вывод на соответствующий печатный лист.
   let printContext = 'journal';
+  // Маркировка: выбранная наклейка, якорь всплывающего редактора и буфер.
+  let selectedMarkingId = null;
+  let markingEditorAnchor = null; // { type: 'sticker' | 'module', id }
+  let markingClipboard = null;    // копия наклейки для Ctrl+C / Ctrl+V
+  // Редактор ленты: выбранная ячейка, отложенный значок и активный режим.
+  let selectedTapeMarkingId = null;
+  let tapePendingIcon = null;
+  let markingMode = 'tape'; // 'tape' | 'sheet'
   // Редактируемая подпись: { kind: 'module' | 'wire', id, anchorRect }.
   let editing = null;
   // Глобальная привязка открытого inline-поля к конкретному элементу холста.
   // Используется горячими клавишами и обработчиками жестов, чтобы не дать
   // Delete/зуму/панораме «проехаться» по элементу, пока идёт ввод.
   let currentEditingId = null;
-  let currentEditingType = null; // 'module' | 'wire'
+  let currentEditingType = null; // 'module' | 'wire' | 'note'
+  // Режим добавления стикеров: следующий клик по холсту ставит заметку.
+  let notePlacing = false;
+  // Выделенная заметка (не входит в общую склейку модулей).
+  let selectedNoteId = null;
   let activePort = null;       // { moduleId, side, index } — первый выбранный порт
   let pendingWire = null;      // { moduleId, side, index } — второй порт, ждём тип L1…PE
   // Множество портов под напряжением, посчитанное calculatePowerFlow().
@@ -609,6 +809,33 @@
 
   function allModules() {
     return project.rails.reduce((modules, rail) => modules.concat(rail.modules), []);
+  }
+
+  /* --------------------------- Стикеры (заметки) -----------------------
+     Заметки не живут на рейке: это свободно лежащие на холсте прямоугольники
+     с текстом. Позиция хранится в координатах viewBox, поэтому не зависит от
+     зума и панорамирования. */
+  function notes() {
+    return Array.isArray(project?.notes) ? project.notes : [];
+  }
+
+  function noteById(noteId) {
+    return notes().find((note) => note.id === noteId) || null;
+  }
+
+  function noteLimits() {
+    return {
+      maxX: Math.max(0, canvasWidth() - NOTE_WIDTH),
+      maxY: Math.max(0, canvasHeight() - NOTE_HEIGHT)
+    };
+  }
+
+  function clampNotePosition(x, y) {
+    const limits = noteLimits();
+    return {
+      x: clamp(x, 0, limits.maxX),
+      y: clamp(y, 0, limits.maxY)
+    };
   }
 
   /* ------------------ Склейка модулей (группы) ------------------------
@@ -1325,7 +1552,8 @@
 
     const switchableIds = LAYER_KEYS.map((key) => LAYER_ELEMENT_IDS[key]);
     canvas.querySelectorAll('g[id^="layer-"]').forEach((group) => {
-      const keep = switchableIds.includes(group.id) || STATIC_GROUP_IDS.includes(group.id);
+      const keep = switchableIds.includes(group.id) ||
+        STATIC_GROUP_IDS.includes(group.id) || group.id === NOTES_GROUP_ID;
       if (!keep) group.remove();
     });
 
@@ -1334,7 +1562,8 @@
       LAYER_ELEMENT_IDS.wires,
       LAYER_ELEMENT_IDS.modules,
       STATIC_GROUP_LAYER_ID,
-      LAYER_ELEMENT_IDS.labels
+      LAYER_ELEMENT_IDS.labels,
+      NOTES_GROUP_ID
     ];
 
     orderedIds.forEach((id) => {
@@ -1357,6 +1586,7 @@
 
     dom.railTrack = canvas.querySelector(`#${STATIC_GROUP_RAIL_ID}`);
     dom.powerSourceLayer = canvas.querySelector(`#${STATIC_GROUP_LAYER_ID}`);
+    dom.notesLayer = canvas.querySelector(`#${NOTES_GROUP_ID}`);
     for (const key of LAYER_KEYS) {
       dom[LAYER_DOM_FIELDS[key]] = canvas.querySelector(`#${LAYER_ELEMENT_IDS[key]}`);
     }
@@ -2117,6 +2347,9 @@
       name,
       rails: [createRail()],
       connections: [],
+      // Стикеры свободно лежат на холсте: они не привязаны к рейке и хранят
+      // только текст и координаты в системе viewBox.
+      notes: [],
       source: { isOn: true },
       simulation: true,
       showParams: true,
@@ -2127,6 +2360,10 @@
       customPrices: {},
       // Кастомные цены за метр кабеля: { L1: 65, N: 50, ... }.
       customCablePrices: {},
+      // Наклейки маркировки и настройки печатного листа. Наклейки
+      // синхронизируются с модулями и проводами через syncMarkings().
+      markings: [],
+      markingSettings: createMarkingSettings(),
       updatedAt: new Date().toISOString()
     };
   }
@@ -2263,6 +2500,31 @@
       result[key] = roundMoney(parsed);
     }
     return result;
+  }
+
+  // Стикеры из localStorage / импортированного JSON. Координаты ограничиваем
+  // разумным диапазоном, чтобы повреждённый файл не увёл заметку за пределы
+  // холста и не сломал экспорт PNG (getBBox считается по реальным элементам).
+  function normalizeNotes(raw) {
+    if (!Array.isArray(raw)) return [];
+    const usedIds = new Set();
+    const notes = [];
+    for (const item of raw) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      let id = safeId(item.id);
+      if (!id || usedIds.has(id)) id = makeId('note');
+      usedIds.add(id);
+
+      const x = Number(item.x);
+      const y = Number(item.y);
+      notes.push({
+        id,
+        text: safeText(item.text, '', MAX_NOTE_TEXT_LENGTH),
+        x: Number.isFinite(x) ? clamp(x, -2000, 4000) : 40,
+        y: Number.isFinite(y) ? clamp(y, -2000, 4000) : 40
+      });
+    }
+    return notes;
   }
 
   function normalizeProject(raw, options = {}) {
@@ -2500,12 +2762,15 @@
       name: safeText(raw.name, 'Новый щит', 60),
       rails,
       connections,
+      notes: normalizeNotes(raw.notes),
       source: { isOn: raw.source?.isOn !== false },
       simulation: raw.simulation !== false,
       showParams: raw.showParams !== false,
       layerSettings: normalizeLayerSettings(raw.layerSettings),
       customPrices: normalizeCustomPrices(raw.customPrices),
       customCablePrices: normalizeCustomCablePrices(raw.customCablePrices),
+      markings: normalizeMarkings(raw.markings),
+      markingSettings: normalizeMarkingSettings(raw.markingSettings),
       updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : new Date().toISOString()
     };
   }
@@ -2618,8 +2883,11 @@
     return JSON.parse(JSON.stringify({
       rails: project.rails,
       connections: project.connections,
+      notes: notes(),
       source: project.source || { isOn: true },
-      layerSettings: project.layerSettings || createLayerSettings()
+      layerSettings: project.layerSettings || createLayerSettings(),
+      markings: markings(),
+      markingSettings: markingSettings()
     }));
   }
 
@@ -2656,8 +2924,16 @@
     const restored = JSON.parse(JSON.stringify(state));
     project.rails = restored.rails;
     project.connections = restored.connections;
+    project.notes = normalizeNotes(restored.notes);
+    if (selectedNoteId && !noteById(selectedNoteId)) selectedNoteId = null;
     project.source = restored.source || project.source || { isOn: true };
     project.layerSettings = normalizeLayerSettings(restored.layerSettings);
+    project.markings = normalizeMarkings(restored.markings);
+    project.markingSettings = normalizeMarkingSettings(restored.markingSettings);
+    if (selectedMarkingId && !markings().some((item) => item.id === selectedMarkingId)) {
+      selectedMarkingId = null;
+      closeMarkingEditor();
+    }
 
     resetInteractionState();
     clearConnectionDraft();
@@ -4546,6 +4822,36 @@
     return boxes.join('');
   }
 
+  // Жёлтый стикер с загнутым углом. Текст переносится по словам и обрезается
+  // многоточием — как подписи модулей, поэтому длинная заметка не вылезает
+  // за пределы бумажки ни на холсте, ни в PNG-экспорте.
+  function buildNoteMarkup(note) {
+    const lines = fitTextLines(note.text, NOTE_TEXT_MAX_CHARS, NOTE_TEXT_MAX_LINES);
+    const textMarkup = lines.length
+      ? lines.map((line, index) =>
+          `<tspan x="12" dy="${index === 0 ? 0 : NOTE_LINE_HEIGHT}">${escapeHtml(line)}</tspan>`
+        ).join('')
+      : `<tspan x="12" dy="0" class="note-placeholder">Двойной клик — текст</tspan>`;
+    const label = escapeHtml(note.text || 'Пустая заметка');
+    const fold = NOTE_WIDTH - 26;
+    return `<g class="note${selectedNoteId === note.id ? ' selected' : ''}" data-note-id="${note.id}" ` +
+      `transform="translate(${viewNumber(note.x)} ${viewNumber(note.y)})" ` +
+      `tabindex="0" role="button" aria-label="Заметка: ${label}">` +
+      `<rect class="note-shadow" x="1" y="3" width="${NOTE_WIDTH}" height="${NOTE_HEIGHT}" rx="5"/>` +
+      `<path class="note-paper" d="M0 5 Q0 0 5 0 H${fold} L${NOTE_WIDTH} 26 ` +
+        `V${NOTE_HEIGHT - 5} Q${NOTE_WIDTH} ${NOTE_HEIGHT} ${NOTE_WIDTH - 5} ${NOTE_HEIGHT} ` +
+        `H5 Q0 ${NOTE_HEIGHT} 0 ${NOTE_HEIGHT - 5} Z"/>` +
+      `<path class="note-fold" d="M${fold} 0 L${NOTE_WIDTH} 26 H${fold} Z"/>` +
+      `<text class="note-text" x="12" y="27">${textMarkup}</text>` +
+      `<g class="note-delete" data-delete-note="${note.id}" tabindex="0" role="button" ` +
+        `aria-label="Удалить заметку" title="Удалить заметку">` +
+        `<circle class="note-delete-bg" cx="${NOTE_WIDTH - 15}" cy="${NOTE_HEIGHT - 15}" r="9"/>` +
+        `<path class="note-delete-mark" d="M${NOTE_WIDTH - 18} ${NOTE_HEIGHT - 18} ` +
+          `l6 6m0-6-6 6" stroke-linecap="round"/>` +
+      `</g>` +
+    `</g>`;
+  }
+
   function renderCanvas() {
     const preview = buildPreview();
     const overRail = preview.overRail;
@@ -4567,6 +4873,7 @@
     }
     if (dom.railTrack) dom.railTrack.innerHTML = '';
     if (dom.powerSourceLayer) dom.powerSourceLayer.innerHTML = '';
+    if (dom.notesLayer) dom.notesLayer.innerHTML = '';
 
     const occupancy = getPortOccupancy();
     const phases = computePortPhases();
@@ -4633,6 +4940,11 @@
     const wireMarkup = buildWiresMarkup(buildWireLayouts(positions));
     dom.wireLayer.innerHTML = wireMarkup.wires + buildPreviewWire(positions);
     dom.labelLayer.innerHTML = wireMarkup.labels + descriptionMarkup;
+
+    // Стикеры лежат поверх всех слоёв и не участвуют в склейке/проводах.
+    if (dom.notesLayer) {
+      dom.notesLayer.innerHTML = notes().map(buildNoteMarkup).join('');
+    }
 
     if (dom.portPhaseTooltip) dom.portPhaseTooltip.hidden = true;
     positionOverlays();
@@ -4837,6 +5149,13 @@
     dom.canvasShell.classList.toggle('is-connecting', Boolean(activePort));
     dom.canvas.classList.toggle('is-connecting', Boolean(activePort));
 
+    if (notePlacing) {
+      dom.connectionHint.textContent = 'Кликните по холсту, чтобы поставить заметку · Esc — отмена';
+      updateWireTypeOptions();
+      positionOverlays();
+      return;
+    }
+
     if (activePort) {
       dom.connectionHint.textContent = pendingWire
         ? 'Выберите тип провода (L1 / L2 / L3 / N / PE)'
@@ -4854,7 +5173,7 @@
     const hasModules = allModules().length > 0;
     dom.exportCsv.disabled = !hasModules;
     dom.exportCsvSecondary.disabled = !hasModules;
-    dom.clearProject.disabled = !hasModules && project.connections.length === 0;
+    dom.clearProject.disabled = !hasModules && project.connections.length === 0 && notes().length === 0;
     if (dom.addRail) dom.addRail.disabled = project.rails.length >= MAX_RAILS;
 
     const picked = selectedModules();
@@ -4877,9 +5196,10 @@
     updateActionState();
     updateDocumentTitle();
     applyLayerSettings();
-    // Если открыта вкладка журнала, она тоже пересчитывается при любом
+    // Открытые вкладки журнала и маркировки тоже пересчитываются при любом
     // изменении проекта (undo/redo, импорт и т. д.).
     if (activeTab === 'journal') renderJournal();
+    if (activeTab === 'marking') renderMarking();
   }
 
   /* --------------------------- Drag & drop ---------------------------- */
@@ -5003,6 +5323,19 @@
     return placements;
   }
 
+  function updateNoteDragPosition(point) {
+    if (!dragState || dragState.kind !== 'note') return;
+    const note = noteById(dragState.noteId);
+    if (!note) return;
+    const position = clampNotePosition(
+      point.x - dragState.grabOffsetX,
+      point.y - dragState.grabOffsetY
+    );
+    note.x = position.x;
+    note.y = position.y;
+    scheduleCanvasRender();
+  }
+
   function updateDragPosition(point) {
     if (!dragState) return;
 
@@ -5115,9 +5448,13 @@
   }
 
   function clearSelection() {
-    if (selectedModuleIds.size === 0) return;
+    const hadModules = selectedModuleIds.size > 0;
+    const hadNote = selectedNoteId !== null;
+    if (!hadModules && !hadNote) return;
     selectedModuleIds.clear();
-    updateSelectionClasses();
+    selectedNoteId = null;
+    if (hadModules) updateSelectionClasses();
+    if (hadNote) scheduleCanvasRender();
   }
 
   // Обычный клик выбирает только модуль; Shift+клик переключает его
@@ -5433,10 +5770,39 @@
     if (editing) commitInlineEdit();
     event.preventDefault();
 
+    // Правый клик по холсту в режиме заметки — отказ: заметку не ставим,
+    // режим сбрасываем (левый клик всё ещё поставил бы стикер).
+    if (notePlacing) {
+      setNotePlacing(false);
+      return;
+    }
+
     const svgPoint = getSVGCoords(event);
     lastPointerSvgPoint = svgPoint;
     const clientX = event.clientX;
     const clientY = event.clientY;
+
+    // ПКМ по стикеру: редактирование текста и удаление.
+    const noteElement = event.target.closest?.('[data-note-id]');
+    const noteId = noteElement?.getAttribute('data-note-id');
+    if (noteId && noteById(noteId) && !event.target.closest?.('[data-delete-note]')) {
+      selectedNoteId = noteId;
+      contextMenuState = { kind: 'note', id: noteId, svgPoint };
+      renderContextMenu([
+        {
+          label: 'Изменить текст',
+          icon: CONTEXT_ICONS.edit,
+          action: () => {
+            const anchor = dom.notesLayer?.querySelector(`[data-note-id="${noteId}"]`) || noteElement;
+            openInlineEditor('note', noteId, anchor);
+          }
+        },
+        { label: 'Удалить', hint: 'Del', danger: true, icon: CONTEXT_ICONS.delete,
+          action: () => removeNote(noteId) }
+      ], 'Заметка');
+      positionContextMenu(clientX, clientY);
+      return;
+    }
 
     const moduleElement = event.target.closest?.('[data-module-id]');
     const moduleId = moduleElement?.getAttribute('data-module-id');
@@ -5531,6 +5897,7 @@
     if (!(target instanceof Element)) return false;
     return !target.closest([
       '[data-module-id]', '[data-wire-id]', '[data-connection-id]', '[data-port-id]',
+      '[data-note-id]', '[data-delete-note]',
       '[data-delete-module]', '[data-delete-wire]', '[data-delete-rail]',
       '[data-rail-capacity]', '[data-toggle-module]', '[data-toggle-source]',
       '.power-source', 'button', 'a', 'input', '[role="button"]', '[role="switch"]'
@@ -5538,6 +5905,7 @@
   }
 
   function onSelectionMouseDown(event) {
+    if (notePlacing) return; // режим заметки: рамка выделения не нужна
     if (event.button !== 0 || spaceHeld || panState || gesture || dragState) return;
     if (selectionBoxState || editing) return;
     if (!isSelectionBackground(event.target)) return;
@@ -5603,6 +5971,27 @@
 
   function activateDrag(event) {
     if (!gesture) return;
+
+    // Стикер тащится свободно по холсту — без привязки к рейке и слотам.
+    if (gesture.kind === 'note') {
+      const note = noteById(gesture.noteId);
+      if (!note) {
+        resetInteractionState();
+        return;
+      }
+      clearConnectionDraft();
+      dragState = {
+        kind: 'note',
+        pointerId: event.pointerId,
+        noteId: note.id,
+        originX: note.x,
+        originY: note.y,
+        grabOffsetX: gesture.grabOffsetX || 0,
+        grabOffsetY: gesture.grabOffsetY || 0
+      };
+      document.body.classList.add('is-dragging');
+      return;
+    }
 
     if (gesture.kind === 'library') {
       const libraryItem = LIBRARY_BY_ID.get(gesture.libraryId);
@@ -5915,6 +6304,16 @@
     resetInteractionState();
     suppressCanvasClickUntil = performance.now() + 350;
 
+    if (finished.kind === 'note') {
+      const note = noteById(finished.noteId);
+      if (note && (note.x !== finished.originX || note.y !== finished.originY)) {
+        persistProject();
+        commitHistory();
+      }
+      renderAll();
+      return;
+    }
+
     if (!finished.overRail || !finished.targetRailId) {
       renderAll();
       return;
@@ -5951,6 +6350,13 @@
 
   function cancelActiveInteraction() {
     if (!dragState && !gesture) return;
+    if (dragState?.kind === 'note') {
+      const note = noteById(dragState.noteId);
+      if (note) {
+        note.x = dragState.originX;
+        note.y = dragState.originY;
+      }
+    }
     resetInteractionState();
     suppressCanvasClickUntil = performance.now() + 250;
     renderAll();
@@ -5992,8 +6398,30 @@
   function onCanvasPointerDown(event) {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
     if (gesture || dragState) return;
+    // В режиме добавления заметки жесты перетаскивания/выделения не нужны.
+    if (notePlacing) return;
 
-    if (event.target.closest('[data-delete-module], [data-delete-wire], [data-delete-rail], [data-rail-capacity], [data-port-id], [data-connection-id], [data-toggle-module], [data-toggle-source]')) {
+    if (event.target.closest('[data-delete-module], [data-delete-wire], [data-delete-rail], [data-delete-note], [data-rail-capacity], [data-port-id], [data-connection-id], [data-toggle-module], [data-toggle-source]')) {
+      return;
+    }
+
+    const noteElement = event.target.closest('[data-note-id]');
+    if (noteElement) {
+      const note = noteById(noteElement.getAttribute('data-note-id'));
+      if (!note) return;
+      event.preventDefault();
+      noteElement.focus?.({ preventScroll: true });
+      const startSvg = getSVGCoords(event);
+      gesture = {
+        kind: 'note',
+        noteId: note.id,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        // Смещение захвата сохраняет положение стикера под курсором при тяге.
+        grabOffsetX: startSvg ? startSvg.x - note.x : 0,
+        grabOffsetY: startSvg ? startSvg.y - note.y : 0
+      };
       return;
     }
 
@@ -6034,7 +6462,8 @@
     const point = svgPointFromEvent(event);
     if (!point) return;
     event.preventDefault();
-    updateDragPosition(point);
+    if (dragState.kind === 'note') updateNoteDragPosition(point);
+    else updateDragPosition(point);
   }
 
   function onPointerUp(event) {
@@ -6042,7 +6471,10 @@
 
     if (dragState) {
       const point = svgPointFromEvent(event);
-      if (point) updateDragPosition(point);
+      if (point) {
+        if (dragState.kind === 'note') updateNoteDragPosition(point);
+        else updateDragPosition(point);
+      }
       finishDrag();
       return;
     }
@@ -6181,6 +6613,17 @@
     // Любой клик вне меню закрывает его (в том числе по кнопке ПКМ — перед
     // открытием нового меню в onContextMenu).
     if (!event.target.closest?.('.context-menu')) closeContextMenu();
+
+    // Отказ от режима «Добавить заметку»: клик вне холста отменяет его, заметка
+    // не создаётся. Клик по самой кнопке не трогаем — её обработчик сам
+    // переключит режим (включённый → выключенный). Клик по холсту тоже не
+    // трогаем: там заметку поставит onCanvasClick.
+    if (notePlacing) {
+      const onToggleButton = dom.addNoteBtn?.contains(event.target);
+      const onCanvas = event.target.closest?.('#panel-canvas');
+      if (!onToggleButton && !onCanvas) setNotePlacing(false);
+    }
+
     // Средняя кнопка — это панорамирование, а не выбор порта: не сбрасываем
     // подготовленный провод и не меняем состояние схемы.
     if (event.pointerType === 'mouse' && event.button === 1) return;
@@ -6313,6 +6756,7 @@
   function deleteSelected() {
     if (selectedModuleIds.size) deleteSelectedModules();
     else if (selectedConnectionId) removeConnection(selectedConnectionId);
+    else if (selectedNoteId) removeNote(selectedNoteId);
   }
 
   function toggleModule(moduleId) {
@@ -6398,6 +6842,70 @@
     toggleModule(toggle.getAttribute('data-toggle-module'));
   }
 
+  /* ----------------------------- Стикеры: действия ---------------------- */
+
+  function setNotePlacing(enabled) {
+    notePlacing = Boolean(enabled);
+    if (notePlacing) {
+      if (editing) commitInlineEdit();
+      clearConnectionDraft();
+      clearSelection();
+      selectedConnectionId = null;
+    }
+    dom.addNoteBtn?.classList.toggle('is-active', notePlacing);
+    dom.addNoteBtn?.setAttribute('aria-pressed', String(notePlacing));
+    dom.svgWrap?.classList.toggle('is-note-placing', notePlacing);
+    dom.canvasShell?.classList.toggle('is-note-placing', notePlacing);
+    updateConnectionUI();
+    if (notePlacing) {
+      showToast('Кликните по холсту, чтобы поставить заметку · Esc — отмена', 'success', 2800);
+    }
+  }
+
+  function addNoteAt(point) {
+    if (!project || !point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+    if (!Array.isArray(project.notes)) project.notes = [];
+
+    const position = clampNotePosition(point.x - NOTE_WIDTH / 2, point.y - 18);
+    const note = { id: makeId('note'), text: '', x: position.x, y: position.y };
+    project.notes.push(note);
+    selectedNoteId = note.id;
+    persistProject();
+    commitHistory();
+    renderAll();
+
+    // Свежесозданный стикер сразу готов к вводу, но двойной клик по нему
+    // (и ПКМ → «Изменить текст») открывает то же поле повторно.
+    const element = dom.notesLayer?.querySelector(`[data-note-id="${note.id}"]`);
+    if (element) openInlineEditor('note', note.id, element);
+    return note;
+  }
+
+  function removeNote(noteId) {
+    const list = notes();
+    const index = list.findIndex((note) => note.id === noteId);
+    if (index < 0) return false;
+    list.splice(index, 1);
+    if (selectedNoteId === noteId) selectedNoteId = null;
+    persistProject();
+    commitHistory();
+    renderAll();
+    return true;
+  }
+
+  function onNoteDblClick(event) {
+    const direct = event.target;
+    const target = direct?.closest?.('[data-note-id]') ? direct : hitElementAtEvent(event);
+    const noteElement = target?.closest?.('[data-note-id]');
+    if (!noteElement || target.closest?.('[data-delete-note]')) return;
+    const noteId = noteElement.getAttribute('data-note-id');
+    if (!noteById(noteId)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    selectedNoteId = noteId;
+    openInlineEditor('note', noteId, noteElement);
+  }
+
   function onCanvasClick(event) {
     if (performance.now() < suppressCanvasClickUntil) return;
 
@@ -6412,6 +6920,24 @@
     // Единая точка перевода курсора в координаты схемы для всех кликов по
     // холсту (порты, фон). getScreenCTM().inverse() учитывает текущий зум.
     const svgPoint = getSVGCoords(event);
+
+    // Режим «Добавить заметку» одноразовый: клик по холсту ставит ровно один
+    // стикер и сразу сбрасывает режим (курсор, подсветка кнопки, aria-pressed
+    // и подсказка возвращаются в обычное состояние через setNotePlacing(false)).
+    // Следующий клик без повторного нажатия кнопки заметку уже не создаст.
+    if (notePlacing) {
+      if (spaceHeld || panState || gesture || dragState) return;
+      event.preventDefault();
+      addNoteAt(svgPoint);
+      setNotePlacing(false);
+      return;
+    }
+
+    const deleteNote = event.target.closest('[data-delete-note]');
+    if (deleteNote) {
+      removeNote(deleteNote.getAttribute('data-delete-note'));
+      return;
+    }
 
     const deleteModule = event.target.closest('[data-delete-module]');
     if (deleteModule) {
@@ -6466,6 +6992,16 @@
       return;
     }
 
+    const noteElement = event.target.closest('[data-note-id]');
+    if (noteElement) {
+      clearSelection();
+      cancelWireSelection();
+      selectedConnectionId = null;
+      selectedNoteId = noteElement.getAttribute('data-note-id');
+      renderAll();
+      return;
+    }
+
     // Клик по пустому месту снимает выделение модулей/провода и выбор порта.
     clearSelection();
     cancelWireSelection();
@@ -6501,20 +7037,25 @@
     const isModule = kind === 'module';
     const isName = kind === 'name';
     const isPower = kind === 'loadPower';
-    const field = isPower ? 'power' : (isName ? 'name' : (isModule ? 'description' : 'label'));
+    const isNote = kind === 'note';
+    const field = isPower ? 'power'
+      : (isName ? 'name' : (isModule ? 'description' : (isNote ? 'text' : 'label')));
     const value = isPower
       ? normalizeLoadPower(dom.inlineEditor.value, DEFAULT_LOAD_POWER)
       : safeText(
           dom.inlineEditor.value,
           '',
           isName ? MAX_MODULE_NAME_LENGTH
-            : (isModule ? MAX_MODULE_DESCRIPTION_LENGTH : MAX_WIRE_LABEL_LENGTH)
+            : (isModule ? MAX_MODULE_DESCRIPTION_LENGTH
+              : (isNote ? MAX_NOTE_TEXT_LENGTH : MAX_WIRE_LABEL_LENGTH))
         );
     closeInlineEditor();
 
-    const item = (isModule || isPower || isName)
-      ? moduleById(id)
-      : project.connections.find((connection) => connection.id === id);
+    const item = isNote
+      ? noteById(id)
+      : ((isModule || isPower || isName)
+        ? moduleById(id)
+        : project.connections.find((connection) => connection.id === id));
     if (!item || item[field] === value) return;
     item[field] = value;
     persistProject();
@@ -6550,9 +7091,12 @@
     const isModule = kind === 'module';
     const isName = kind === 'name';
     const isPower = kind === 'loadPower';
-    const item = (isModule || isPower || isName)
-      ? moduleById(id)
-      : project.connections.find((connection) => connection.id === id);
+    const isNote = kind === 'note';
+    const item = isNote
+      ? noteById(id)
+      : ((isModule || isPower || isName)
+        ? moduleById(id)
+        : project.connections.find((connection) => connection.id === id));
     if (!item) return;
 
     // Фиксируем прямоугольник до сохранения предыдущего поля: commitInlineEdit()
@@ -6563,14 +7107,16 @@
     commitInlineEdit();
     clearConnectionDraft();
 
-    const field = isPower ? 'power' : (isName ? 'name' : (isModule ? 'description' : 'label'));
+    const field = isPower ? 'power'
+      : (isName ? 'name' : (isModule ? 'description' : (isNote ? 'text' : 'label')));
     editing = { kind, id, anchorRect };
     // Глобальная привязка поля к редактируемому элементу.
     currentEditingId = id;
     currentEditingType = kind;
     const editor = dom.inlineEditor;
     const context = isPower ? 'Мощность нагрузки, Вт'
-      : (isName ? 'Название модуля' : (isModule ? 'Описание модуля' : 'Маркировка провода'));
+      : (isName ? 'Название модуля'
+        : (isModule ? 'Описание модуля' : (isNote ? 'Текст заметки' : 'Маркировка провода')));
     editor.type = isPower ? 'number' : 'text';
     if (isPower) {
       editor.min = String(MIN_LOAD_POWER);
@@ -6583,7 +7129,8 @@
       editor.removeAttribute('step');
       editor.maxLength = isName
         ? MAX_MODULE_NAME_LENGTH
-        : (isModule ? MAX_MODULE_DESCRIPTION_LENGTH : MAX_WIRE_LABEL_LENGTH);
+        : (isModule ? MAX_MODULE_DESCRIPTION_LENGTH
+          : (isNote ? MAX_NOTE_TEXT_LENGTH : MAX_WIRE_LABEL_LENGTH));
     }
     editor.value = isPower
       ? String(normalizeLoadPower(item.power, DEFAULT_LOAD_POWER))
@@ -6596,7 +7143,9 @@
           ? 'Например: Автомат C16 · Enter — сохранить'
           : (isModule
               ? 'Например: Розетки в туалете · Enter — сохранить'
-              : 'Например: Свет в комнате · Enter — сохранить'));
+              : (isNote
+                  ? 'Например: Проверить заземление · Enter — сохранить'
+                  : 'Например: Свет в комнате · Enter — сохранить')));
     editor.hidden = false;
     placeOverlay(editor, editing.anchorRect, 10);
     editor.focus({ preventScroll: true });
@@ -6652,7 +7201,7 @@
     if (!target || target.closest?.('#inline-editor, .inline-editor-input')) return;
     // Провода обрабатывает onWireDblClick, модули — onModuleDblClick;
     // остальные служебные элементы оставляем их собственным обработчикам.
-    if (target.closest?.('[data-connection-id], [data-module-id], [data-delete-module], [data-delete-wire], [data-delete-rail], [data-rail-capacity], [data-toggle-module], [data-toggle-source], [data-port-id]')) return;
+    if (target.closest?.('[data-connection-id], [data-module-id], [data-note-id], [data-delete-note], [data-delete-module], [data-delete-wire], [data-delete-rail], [data-rail-capacity], [data-toggle-module], [data-toggle-source], [data-port-id]')) return;
   }
 
   function onCanvasKeyDown(event) {
@@ -6674,6 +7223,20 @@
     if (deleteWire && (event.key === 'Enter' || event.key === ' ')) {
       event.preventDefault();
       removeConnection(deleteWire.getAttribute('data-delete-wire'));
+      return;
+    }
+
+    const deleteNote = event.target.closest('[data-delete-note]');
+    if (deleteNote && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault();
+      removeNote(deleteNote.getAttribute('data-delete-note'));
+      return;
+    }
+
+    const noteElement = event.target.closest('[data-note-id]');
+    if (noteElement && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault();
+      onNoteDblClick(event);
       return;
     }
 
@@ -6768,12 +7331,14 @@
       // вставить в точку курсора на холсте (или в центр текущего вида).
       if (key === 'c') {
         event.preventDefault();
-        copyModulesToClipboard();
+        if (activeTab === 'marking') copyMarkingToClipboard();
+        else copyModulesToClipboard();
         return;
       }
       if (key === 'v') {
         event.preventDefault();
-        pasteModulesAt(lastPointerSvgPoint || defaultPastePoint());
+        if (activeTab === 'marking') pasteMarkingFromClipboard();
+        else pasteModulesAt(lastPointerSvgPoint || defaultPastePoint());
         return;
       }
       // Склейка выделенных модулей: Ctrl+G / Ctrl+Shift+G (разъединение).
@@ -6798,6 +7363,14 @@
 
     if (event.key === 'Escape') {
       if (event.target.closest?.('dialog')) return;
+      if (!dom.markingEditor.hidden) {
+        closeMarkingEditor();
+        return;
+      }
+      if (notePlacing) {
+        setNotePlacing(false);
+        return;
+      }
       if (selectionBoxState) {
         cancelSelectionBox();
         return;
@@ -6819,7 +7392,14 @@
     }
 
     if (event.key === 'Delete' || event.key === 'Backspace') {
-      if (!selectedModuleIds.size && !selectedConnectionId) return;
+      if (isEditable) return;
+      if (activeTab === 'marking') {
+        if (!selectedMarkingId) return;
+        event.preventDefault();
+        deleteMarking();
+        return;
+      }
+      if (!selectedModuleIds.size && !selectedConnectionId && !selectedNoteId) return;
       if (event.target.matches?.('input, textarea, [contenteditable="true"]')) return;
       event.preventDefault();
       deleteSelected();
@@ -6841,10 +7421,15 @@
   /* ------------------------------ Clear ------------------------------- */
 
   function clearProject() {
-    if (allModules().length === 0 && project.connections.length === 0) return;
+    if (allModules().length === 0 && project.connections.length === 0 && notes().length === 0) return;
 
     project.rails = [createRail()];
     project.connections = [];
+    project.notes = [];
+    project.markings = [];
+    closeMarkingEditor();
+    markingClipboard = null;
+    selectedNoteId = null;
     project.source = { isOn: true };
     clearConnectionDraft();
     clearSelection();
@@ -7412,27 +7997,35 @@
     input.addEventListener('blur', () => finish(true));
   }
 
-  // Переключение вкладок. При входе в журнал таблица пересобирается заново:
-  // новый провод, добавленный на схеме, сразу появляется в журнале.
+  // Переключение вкладок. Журнал и маркировка пересобираются при каждом
+  // входе: новые провода и описания модулей сразу попадают на печатный лист.
   function switchViewTab(tab) {
-    const isJournal = tab === 'journal';
-    activeTab = isJournal ? 'journal' : 'schema';
+    activeTab = tab === 'journal' || tab === 'marking' ? tab : 'schema';
+    const isSchema = activeTab === 'schema';
+    const isJournal = activeTab === 'journal';
+    const isMarking = activeTab === 'marking';
+    if (!isSchema && notePlacing) setNotePlacing(false);
+    if (!isSchema && !dom.markingEditor.hidden) closeMarkingEditor();
 
-    if (dom.tabSchema) {
-      dom.tabSchema.classList.toggle('is-active', !isJournal);
-      dom.tabSchema.setAttribute('aria-selected', String(!isJournal));
-      dom.tabSchema.tabIndex = isJournal ? -1 : 0;
-    }
-    if (dom.tabJournal) {
-      dom.tabJournal.classList.toggle('is-active', isJournal);
-      dom.tabJournal.setAttribute('aria-selected', String(isJournal));
-      dom.tabJournal.tabIndex = isJournal ? 0 : -1;
-    }
-    if (dom.schemaView) dom.schemaView.hidden = isJournal;
+    const tabs = [
+      [dom.tabSchema, isSchema],
+      [dom.tabJournal, isJournal],
+      [dom.tabMarking, isMarking]
+    ];
+    tabs.forEach(([button, active]) => {
+      if (!button) return;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-selected', String(active));
+      button.tabIndex = active ? 0 : -1;
+    });
+    if (dom.schemaView) dom.schemaView.hidden = !isSchema;
     if (dom.journalView) dom.journalView.hidden = !isJournal;
+    if (dom.markingView) dom.markingView.hidden = !isMarking;
     document.body.classList.toggle('is-journal-tab', isJournal);
+    document.body.classList.toggle('is-marking-tab', isMarking);
 
     if (isJournal && project) renderJournal();
+    if (isMarking && project) renderMarking();
   }
 
   function exportJournalCsv() {
@@ -7465,6 +8058,1812 @@
   function printJournal() {
     printContext = 'journal';
     renderJournal();
+    window.print();
+  }
+
+  /* ====================================================================
+     МАРКИРОВКА — лист наклеек в масштабе 1:1
+     --------------------------------------------------------------------
+     Источник данных — схема: каждый модуль даёт наклейку шириной
+     width × 18 мм, каждый провод с непустым label — отдельную бирку.
+     Правки пользователя хранятся в project.markings и автоматически
+     попадают в localStorage, JSON-экспорт и историю Undo/Redo.
+     ==================================================================== */
+
+  function createMarkingSettings() {
+    return { ...DEFAULT_MARKING_SETTINGS };
+  }
+
+  function normalizeMarkingSettings(raw) {
+    const settings = createMarkingSettings();
+    if (!raw || typeof raw !== 'object') return settings;
+    if (MARKING_SHEET_SIZES[raw.sheet]) settings.sheet = raw.sheet;
+    if (raw.orientation === 'portrait' || raw.orientation === 'landscape') {
+      settings.orientation = raw.orientation;
+    }
+    ['marginTop', 'marginRight', 'marginBottom', 'marginLeft'].forEach((key) => {
+      const value = Number(raw[key]);
+      if (Number.isFinite(value)) settings[key] = clamp(Math.round(value), 0, 40);
+    });
+    settings.showRuler = raw.showRuler !== false;
+    settings.printLegend = raw.printLegend === true;
+    return settings;
+  }
+
+  function normalizeMarkings(raw) {
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set();
+    const result = [];
+    raw.forEach((item) => {
+      if (!item || typeof item !== 'object') return;
+      const id = safeId(item.id) || makeId('mrk');
+      if (seen.has(id)) return;
+      const refId = safeText(item.refId, '', 80);
+      if (!refId) return;
+      seen.add(id);
+      let widthMm = Number(item.widthMm);
+      if (!Number.isFinite(widthMm) || widthMm < 0) widthMm = 0;
+      result.push({
+        id,
+        kind: item.kind === 'wire' ? 'wire' : 'module',
+        refId,
+        textMode: ['description', 'tag', 'name'].includes(item.textMode) ? item.textMode : 'description',
+        orientation: item.orientation === 'vertical' ? 'vertical' : 'horizontal',
+        widthMm: Math.round(clamp(widthMm, 0, 300)),
+        icon: Object.prototype.hasOwnProperty.call(MARKING_ICONS, item.icon) ? item.icon : 'none',
+        color: typeof item.color === 'string' && HEX_COLOR_RE.test(item.color)
+          ? item.color.toLowerCase()
+          : DEFAULT_TAPE_COLOR,
+        hidden: item.hidden === true,
+        isCopy: item.isCopy === true,
+        groupId: safeGroupId(item.groupId) || '',
+        mainSnapshot: safeText(item.mainSnapshot, '', MARKING_MAIN_LENGTH),
+        subSnapshot: safeText(item.subSnapshot, '', MARKING_MAIN_LENGTH),
+        brandSnapshot: safeText(item.brandSnapshot, '', 60)
+      });
+    });
+    return result;
+  }
+
+  function markingSettings() {
+    return normalizeMarkingSettings(project?.markingSettings);
+  }
+
+  function markings() {
+    return Array.isArray(project?.markings) ? project.markings : [];
+  }
+
+  function createMarking(kind, refId) {
+    return {
+      id: makeId('mrk'),
+      kind,
+      refId,
+      textMode: 'description',
+      orientation: 'horizontal',
+      widthMm: 0,
+      icon: 'none',
+      color: DEFAULT_TAPE_COLOR,
+      hidden: false,
+      isCopy: false,
+      groupId: '',
+      mainSnapshot: '',
+      subSnapshot: '',
+      brandSnapshot: ''
+    };
+  }
+
+  // Модули слева направо внутри рейки, рейки сверху вниз.
+  function orderedModulesForMarking() {
+    const ordered = [];
+    project.rails.forEach((rail, railIndex) => {
+      rail.modules.slice().sort((a, b) => a.slot - b.slot).forEach((module, index) => {
+        ordered.push({ module, railIndex, index });
+      });
+    });
+    return ordered;
+  }
+
+  // Синхронизация с текущей схемой: создаём недостающие наклейки, удаляем
+  // «осиротевшие» и сохраняем порядок слева направо, сверху вниз.
+  function syncMarkings() {
+    if (!project) return markings();
+    const list = markings().slice();
+    const validKeys = new Set();
+    const refOrder = new Map();
+
+    orderedModulesForMarking().forEach(({ module }, index) => {
+      const key = `module:${module.id}`;
+      validKeys.add(key);
+      refOrder.set(key, index);
+      if (!list.some((item) => item.kind === 'module' && item.refId === module.id && !item.isCopy)) {
+        list.push(createMarking('module', module.id));
+      }
+    });
+    project.connections.forEach((connection, index) => {
+      if (!String(connection.label || '').trim()) return;
+      const key = `wire:${connection.id}`;
+      validKeys.add(key);
+      refOrder.set(key, 1000 + index);
+      if (!list.some((item) => item.kind === 'wire' && item.refId === connection.id && !item.isCopy)) {
+        list.push(createMarking('wire', connection.id));
+      }
+    });
+
+    const filtered = list.filter((item) => validKeys.has(`${item.kind}:${item.refId}`));
+    filtered.sort((a, b) => {
+      const orderA = refOrder.get(`${a.kind}:${a.refId}`) ?? 9999;
+      const orderB = refOrder.get(`${b.kind}:${b.refId}`) ?? 9999;
+      if (orderA !== orderB) return orderA - orderB;
+      if (a.isCopy !== b.isCopy) return a.isCopy ? 1 : -1;
+      return 0;
+    });
+
+    // Группа из одной наклейки смысла не имеет — сбрасываем такую связь.
+    const groupSizes = new Map();
+    filtered.forEach((item) => {
+      if (item.groupId) groupSizes.set(item.groupId, (groupSizes.get(item.groupId) || 0) + 1);
+    });
+    filtered.forEach((item) => {
+      if (item.groupId && groupSizes.get(item.groupId) < 2) item.groupId = '';
+    });
+
+    const previous = markings();
+    if (filtered.length !== previous.length || filtered.some((item, index) => item !== previous[index])) {
+      project.markings = filtered;
+    }
+    return markings();
+  }
+
+  function markingMainText(marking, module, connection) {
+    if (marking.isCopy && marking.mainSnapshot) return marking.mainSnapshot;
+    if (marking.kind === 'wire') {
+      return String(connection?.label || '').trim() || connection?.type || 'Провод';
+    }
+    if (marking.textMode === 'tag') return module?.tag || module?.description || module?.name || '';
+    if (marking.textMode === 'name') return module?.name || module?.tag || '';
+    return module?.description || module?.tag || module?.name || '';
+  }
+
+  function markingData(marking) {
+    const module = marking.kind === 'module' ? moduleById(marking.refId) : null;
+    const connection = marking.kind === 'wire'
+      ? project.connections.find((item) => item.id === marking.refId)
+      : null;
+    const libraryItem = module ? LIBRARY_BY_ID.get(module.libraryId) : null;
+    const orientation = marking.orientation === 'vertical' ? 'vertical' : 'horizontal';
+    const widthMm = marking.widthMm > 0
+      ? marking.widthMm
+      : (marking.kind === 'wire' ? MARKING_WIRE_WIDTH_MM : (module?.width || 1) * MM_PER_MODULE);
+    const heightMm = marking.kind === 'wire'
+      ? (orientation === 'vertical' ? 16 : MARKING_WIRE_HEIGHT_MM)
+      : (orientation === 'vertical' ? MARKING_STICKER_VERTICAL_HEIGHT_MM : MARKING_STICKER_HEIGHT_MM);
+    return {
+      main: markingMainText(marking, module, connection),
+      tag: marking.kind === 'wire'
+        ? (connection?.type || 'Провод')
+        : (module?.tag || marking.mainSnapshot || ''),
+      color: marking.kind === 'wire'
+        ? (WIRE_TYPES[connection?.type]?.color || WIRE_TYPES[DEFAULT_WIRE_TYPE].color)
+        : (HEX_COLOR_RE.test(String(marking.color || ''))
+          ? String(marking.color).toLowerCase()
+          : DEFAULT_TAPE_COLOR),
+      sub: marking.isCopy && marking.subSnapshot
+        ? marking.subSnapshot
+        : (marking.kind === 'wire'
+          ? `${connection?.type || 'Провод'} · бирка`
+          : (module?.name || '')),
+      brand: marking.isCopy
+        ? marking.brandSnapshot
+        : (libraryItem?.brand || ''),
+      icon: marking.icon,
+      orientation,
+      widthMm,
+      heightMm
+    };
+  }
+
+  // Объединяем соседние наклейки с общим groupId в одну широкую.
+  function markingUnits() {
+    const list = syncMarkings().filter((item) => !item.hidden);
+    const units = [];
+    const consumed = new Set();
+    list.forEach((marking, index) => {
+      if (consumed.has(marking.id)) return;
+      if (marking.groupId && marking.kind === 'module') {
+        const members = [marking];
+        for (let nextIndex = index + 1; nextIndex < list.length; nextIndex += 1) {
+          const next = list[nextIndex];
+          // Копии — самостоятельные наклейки: они не разрывают группу.
+          if (next.isCopy) continue;
+          if (next.kind !== 'module' || next.groupId !== marking.groupId) break;
+          members.push(next);
+          consumed.add(next.id);
+        }
+        if (members.length > 1) {
+          const data = members.map(markingData);
+          const vertical = data.some((item) => item.orientation === 'vertical');
+          units.push({
+            ids: members.map((item) => item.id),
+            primary: marking,
+            kind: 'module',
+            isCopy: members.some((item) => item.isCopy),
+            isGroup: true,
+            main: data.map((item) => item.main).filter(Boolean).join(' / '),
+            sub: data[0].sub,
+            brand: data[0].brand,
+            icon: data[0].icon,
+            orientation: vertical ? 'vertical' : 'horizontal',
+            widthMm: data.reduce((sum, item) => sum + item.widthMm, 0) +
+              (members.length - 1) * MARKING_GAP_X_MM,
+            heightMm: vertical ? MARKING_STICKER_VERTICAL_HEIGHT_MM : MARKING_STICKER_HEIGHT_MM
+          });
+          return;
+        }
+      }
+      units.push({
+        ids: [marking.id],
+        primary: marking,
+        kind: marking.kind,
+        isCopy: marking.isCopy,
+        isGroup: false,
+        ...markingData(marking)
+      });
+    });
+    return units;
+  }
+
+  // Бирки проводов не привязаны к рейке, поэтому они идут отдельным блоком
+  // после рядов. Блок попадает в общий HTML обеих вкладок, но на «Ленте»
+  // скрывается CSS — так раскладка остаётся единой, а отличается только
+  // контейнер (см. .marking-tape и .a4-page в style.css).
+  function wireTagsHtml(printMode, maxWidth = null, isPrintView = false) {
+    const list = syncMarkings().filter((item) => item.kind === 'wire' && !item.hidden);
+    if (!list.length) return { html: '', width: 0, height: 0 };
+    const stickers = list.map((marking) => isPrintView
+      ? printStickerHtml(marking, printMode)
+      : markingStickerHtml({
+          ids: [marking.id],
+          primary: marking,
+          kind: 'wire',
+          isCopy: marking.isCopy,
+          isGroup: false,
+          ...markingData(marking),
+          x: 0,
+          y: 0
+        }, printMode, true)).join('');
+    const width = list.reduce((sum, marking) => sum + markingData(marking).widthMm, 0) +
+      (list.length - 1) * MARKING_GAP_X_MM;
+    const perRow = maxWidth
+      ? Math.max(1, Math.floor((maxWidth + MARKING_GAP_X_MM) /
+        (MARKING_WIRE_WIDTH_MM + MARKING_GAP_X_MM)))
+      : list.length;
+    const rows = Math.ceil(list.length / perRow);
+    return {
+      html: `<section class="a4-wire-tags" aria-label="Бирки проводов">
+        <h3 class="a4-wire-heading">Бирки проводов · ${list.length}</h3>
+        <div class="a4-wire-list">${stickers}</div>
+      </section>`,
+      width,
+      height: 6 + rows * ((isPrintView ? PRINT_WIRE_STICKER_HEIGHT_MM : MARKING_WIRE_HEIGHT_MM) +
+        MARKING_GAP_X_MM)
+    };
+  }
+
+  /* ------------------ Лист 1:1: наклейки по слотам реек ----------------
+     Печатный лист повторяет схему: каждая рейка из project.rails получает
+     отдельный ряд с заголовком, а внутри ряда слоты идут строго слева
+     направо. Занятый слот даёт наклейку шириной 18 мм × число полюсов
+     модуля, пустой — невидимую заглушку ровно на 18 мм. Сам шаблон
+     наклейки (sheetStickerHtml) при этом не меняется. */
+  function sheetStickerUnit(marking, slots) {
+    return {
+      ids: [marking.id],
+      primary: marking,
+      kind: marking.kind,
+      isCopy: marking.isCopy === true,
+      isGroup: false,
+      ...markingData(marking),
+      // Ширина на листе всегда равна числу реальных слотов модуля.
+      widthMm: Math.max(1, slots) * MM_PER_MODULE
+    };
+  }
+
+  function sheetRailRows() {
+    const list = syncMarkings().filter((item) =>
+      item.kind === 'module' && !item.hidden);
+    // Копии не занимают слот: приписываем их к рейке модуля-источника.
+    const copiesByRail = new Map();
+    list.forEach((marking) => {
+      if (!marking.isCopy) return;
+      const location = railOfModule(marking.refId);
+      if (!location) return;
+      if (!copiesByRail.has(location.rail.id)) copiesByRail.set(location.rail.id, []);
+      copiesByRail.get(location.rail.id).push(marking);
+    });
+
+    return project.rails.map((rail, railIndex) => {
+      const capacity = Math.max(0, Math.round(Number(rail.capacity) || 0));
+      // Карта слотов: каждый занятый слот указывает на свой модуль.
+      const owners = new Array(capacity).fill(null);
+      let lastUsed = -1;
+      rail.modules.forEach((module) => {
+        const marking = list.find((item) => item.refId === module.id && !item.isCopy);
+        if (!marking) return;
+        const slot = Math.max(0, Math.round(Number(module.slot) || 0));
+        const width = Math.max(1, Math.round(Number(module.width) || 1));
+        for (let index = slot; index < Math.min(slot + width, capacity); index += 1) {
+          owners[index] = { module, marking, slot, width };
+          lastUsed = Math.max(lastUsed, index);
+        }
+      });
+
+      const items = [];
+      const rendered = new Set();
+      // Проход по слотам 0…capacity. Хвостовые пустые слоты после последнего
+      // модуля не выводятся: они не влияют на положение самих наклеек.
+      for (let slot = 0; slot <= lastUsed; slot += 1) {
+        const owner = owners[slot];
+        if (!owner) {
+          // Пустое место — невидимая заглушка шириной ровно 1 модуль (18 мм).
+          items.push({ type: 'spacer', slots: 1, widthMm: MM_PER_MODULE });
+          continue;
+        }
+        if (rendered.has(owner.module.id)) continue; // модуль занял несколько слотов
+        rendered.add(owner.module.id);
+
+        // Соседние модули с общим groupId дают одну широкую наклейку.
+        const members = [owner];
+        if (owner.marking.groupId) {
+          let nextSlot = slot + owner.width;
+          while (nextSlot <= lastUsed) {
+            const candidate = owners[nextSlot];
+            if (!candidate || candidate.marking.isCopy ||
+                candidate.marking.groupId !== owner.marking.groupId) break;
+            members.push(candidate);
+            rendered.add(candidate.module.id);
+            nextSlot += candidate.width;
+          }
+        }
+
+        if (members.length > 1) {
+          const data = members.map((entry) => markingData(entry.marking));
+          const slots = members.reduce((sum, entry) => sum + entry.width, 0);
+          items.push({
+            type: 'module',
+            slots,
+            widthMm: slots * MM_PER_MODULE,
+            unit: {
+              ids: members.map((entry) => entry.marking.id),
+              primary: owner.marking,
+              kind: 'module',
+              isCopy: members.some((entry) => entry.marking.isCopy),
+              isGroup: true,
+              main: data.map((item) => item.main).filter(Boolean).join(' / '),
+              tag: data[0].tag,
+              sub: data[0].sub,
+              brand: data[0].brand,
+              icon: data[0].icon,
+              color: data[0].color
+            }
+          });
+        } else {
+          items.push({
+            type: 'module',
+            slots: owner.width,
+            widthMm: owner.width * MM_PER_MODULE,
+            unit: sheetStickerUnit(owner.marking, owner.width)
+          });
+        }
+      }
+
+      (copiesByRail.get(rail.id) || []).forEach((marking) => {
+        const module = moduleById(marking.refId);
+        const slots = Math.max(1, Math.round(Number(module?.width) || 1));
+        items.push({
+          type: 'module',
+          slots,
+          widthMm: slots * MM_PER_MODULE,
+          unit: sheetStickerUnit(marking, slots)
+        });
+      });
+
+      return {
+        rail,
+        railIndex,
+        label: `Рейка ${railIndex + 1}`,
+        items,
+        width: items.reduce((sum, item) => sum + item.widthMm, 0),
+        moduleCount: items.filter((item) => item.type === 'module').length
+      };
+    });
+  }
+
+  // Слишком длинный ряд (шире листа) делится на продолжения, как на ленте.
+  // Части сохраняют порядок слотов и точную ширину 18 мм на модуль.
+  function splitSheetRow(row, maxWidth) {
+    if (!maxWidth || row.width <= maxWidth) return [{ ...row, continuation: false }];
+    const chunks = [];
+    let items = [];
+    let width = 0;
+    row.items.forEach((item) => {
+      if (items.length && width + item.widthMm > maxWidth) {
+        chunks.push({ items, width });
+        items = [];
+        width = 0;
+      }
+      items.push(item);
+      width += item.widthMm;
+    });
+    if (items.length) chunks.push({ items, width });
+    if (!chunks.length) return [{ ...row, continuation: false }];
+    return chunks.map((chunk, index) => ({
+      ...row,
+      items: chunk.items,
+      width: chunk.width,
+      continuation: index > 0
+    }));
+  }
+
+  // Один ряд рейки на печатном листе: заголовок и полоса, где наклейки и
+  // заглушки идут строго друг за другом без переноса внутри рейки.
+  function sheetRailRowHtml(row, printMode) {
+    const cells = row.items.map((item) => item.type === 'spacer'
+      ? `<span class="sheet-spacer" style="--slot-width:${item.widthMm}mm" aria-hidden="true"></span>`
+      : sheetStickerHtml(item.unit, printMode)).join('');
+    return `<section class="sheet-rail-row" data-rail-index="${row.railIndex}">` +
+      `<div class="sheet-rail-heading">` +
+        `<span class="sheet-rail-name">${escapeHtml(row.label)}</span>` +
+        `<span class="sheet-rail-meta">${row.moduleCount} ` +
+          `${plural(row.moduleCount, ['модуль', 'модуля', 'модулей'])} · ${row.rail.capacity} P</span>` +
+        (row.continuation ? `<span class="sheet-continuation">Продолжение рейки</span>` : '') +
+      `</div>` +
+      `<div class="sheet-rail-track">` +
+        (cells || `<span class="sheet-spacer" style="--slot-width:18mm" aria-hidden="true"></span>`) +
+      `</div>` +
+    `</section>`;
+  }
+
+  function sheetStickerHtml(item, printMode) {
+    const isWire = item.kind === 'wire';
+    // Ширина строго из расчёта 18 мм на модуль. Для бирок проводов (24 мм)
+    // получается дробный коэффициент — их физический размер не меняется.
+    const moduleWidth = Math.max(1, item.widthMm || MM_PER_MODULE) / MM_PER_MODULE;
+    const classes = ['print-sticker'];
+    if (isWire) classes.push('is-wire');
+    if (item.isGroup) classes.push('is-group');
+    if (item.isCopy) classes.push('is-copy');
+    const iconKey = item.icon && MARKING_ICONS[item.icon]?.svg ? item.icon : 'breaker';
+    const icon = isWire ? '' :
+      `<span class="print-sticker-icon" aria-hidden="true">` +
+        `<svg viewBox="0 0 24 24">${MARKING_ICONS[iconKey].svg}</svg></span>`;
+    const tag = String(item.tag || '').trim() || (isWire ? 'Провод' : '—');
+    const desc = isWire
+      ? (String(item.main || '').trim() || String(item.sub || '').trim())
+      : String(item.sub || '').trim();
+    const brand = String(item.brand || '').trim();
+    const color = HEX_COLOR_RE.test(String(item.color || ''))
+      ? String(item.color).toLowerCase()
+      : DEFAULT_TAPE_COLOR;
+    const attrs = printMode
+      ? ''
+      : ` type="button" data-marking-id="${escapeHtml(item.primary.id)}" ` +
+        `title="${escapeHtml(`${tag} · ${desc || 'Наклейка'} — клик для редактирования`)}"`;
+    const tagName = printMode ? 'div' : 'button';
+    return `<${tagName} class="${classes.join(' ')}" ` +
+      `style="--module-width:${moduleWidth.toFixed(4)};--sticker-color:${escapeHtml(color)}"${attrs}>` +
+        icon +
+        `<span class="print-sticker-copy">` +
+          `<span class="print-sticker-tag">${escapeHtml(tag)}</span>` +
+          `<span class="print-sticker-desc">${escapeHtml(desc)}</span>` +
+          `<span class="print-sticker-meta">${escapeHtml(brand)}</span>` +
+        `</span>` +
+        `<span class="print-sticker-color" aria-hidden="true"></span>` +
+      `</${tagName}>`;
+  }
+
+  // «Лист 1:1» — фиксированный A4 альбомный лист без полей страницы.
+  // Это единственный способ гарантировать 1:1 и в предпросмотре, и в печати:
+  // остальные настройки листа относятся только к «Ленте».
+  function sheetPageSettings() {
+    const settings = markingSettings();
+    return {
+      ...settings,
+      sheet: 'A4',
+      orientation: 'landscape',
+      marginTop: 0,
+      marginRight: 0,
+      marginBottom: 0,
+      marginLeft: 0
+    };
+  }
+
+  // Высота одного блока в печатном потоке. Ряд рейки состоит из заголовка
+  // и полосы наклеек; если ряд пришлось масштабировать, высота уменьшается.
+  function markingPartHeightMm(part) {
+    if (part.type === 'wires') return part.height || MARKING_WIRE_HEIGHT_MM + 8;
+    return TAPE_RAIL_HEADING_MM + TAPE_CELL_HEIGHT_MM * (part.scale || 1);
+  }
+
+  function buildSheetPages(printMode) {
+    const settings = sheetPageSettings();
+    const sizes = MARKING_SHEET_SIZES[settings.sheet] || MARKING_SHEET_SIZES.A4;
+    const [sheetW, sheetH] = sizes[settings.orientation];
+    const contentW = Math.max(20, sheetW - settings.marginLeft - settings.marginRight);
+    // Внизу листа всегда остаётся место под контрольный маркер 100 мм,
+    // а при включённой легенде — ещё и под её список.
+    const legendEntries = settings.printLegend ? markingLegendEntries() : [];
+    const legendH = markingLegendHeightMm(legendEntries);
+    const rulerH = settings.showRuler ? MARKING_RULER_HEIGHT_MM : 0;
+    const footerH = MARKING_SCALE_MARKER_HEIGHT_MM + (legendEntries.length ? legendH + 1 : 0);
+    const contentH = Math.max(20, sheetH - settings.marginTop - settings.marginBottom - rulerH - footerH);
+
+    // По одному ряду на рейку. Наклейки внутри ряда не переносятся; если
+    // рейка шире листа, она делится на продолжения с сохранением слотов.
+    const parts = [];
+    sheetRailRows().forEach((row) => {
+      splitSheetRow(row, contentW).forEach((part) => parts.push(part));
+    });
+
+    const rowHeight = SHEET_RAIL_HEADING_MM + PRINT_STICKER_HEIGHT_MM;
+    const rowStep = rowHeight + SHEET_RAIL_GAP_MM;
+    const rowsPerPage = Math.max(1, Math.floor((contentH + SHEET_RAIL_GAP_MM) / rowStep));
+    const pages = [];
+    for (let start = 0; start < parts.length; start += rowsPerPage) {
+      pages.push({
+        html: parts.slice(start, start + rowsPerPage)
+          .map((part) => sheetRailRowHtml(part, printMode)).join('')
+      });
+    }
+    if (!pages.length) pages.push({ html: '' });
+
+    // Бирки проводов не привязаны к рейке — отдельный блок после рядов.
+    const wires = wireTagsHtml(printMode, contentW, true);
+    if (wires.html) pages[pages.length - 1].html += wires.html;
+
+    return {
+      pages,
+      settings,
+      sheetW,
+      sheetH,
+      contentW,
+      contentH,
+      legendEntries
+    };
+  }
+
+  // Уникальные значки, выбранные у модулей на схеме. Легенда строится
+  // именно по наклейкам модулей: бирки проводов и модули без иконки
+  // в неё не попадают.
+  function markingLegendEntries() {
+    const seen = new Set();
+    const entries = [];
+    markings().forEach((marking) => {
+      if (marking.kind !== 'module' || marking.icon === 'none') return;
+      const icon = MARKING_ICONS[marking.icon];
+      if (!icon || !icon.svg || seen.has(marking.icon)) return;
+      seen.add(marking.icon);
+      entries.push({ key: marking.icon, label: icon.label, svg: icon.svg });
+    });
+    return entries;
+  }
+
+  function markingLegendHeightMm(entries) {
+    if (!entries.length) return 0;
+    const rows = Math.ceil(entries.length / MARKING_LEGEND_COLUMNS);
+    return MARKING_LEGEND_HEADER_MM + rows * MARKING_LEGEND_ROW_MM;
+  }
+
+  function markingLegendHtml(entries) {
+    if (!entries.length) return '';
+    const items = entries.map((entry) => `
+      <li class="marking-legend-item">
+        <span class="marking-legend-icon" aria-hidden="true"><svg viewBox="0 0 24 24">${entry.svg}</svg></span>
+        <span class="marking-legend-name">— ${escapeHtml(entry.label)}</span>
+      </li>`).join('');
+    return `<div class="marking-legend" role="group" aria-label="Легенда значков">
+      <div class="marking-legend-title">Легенда</div>
+      <ul class="marking-legend-list">${items}</ul>
+    </div>`;
+  }
+
+  // Контрольный размер: линия ровно 100 мм (см. .marking-scale-marker-line
+  // в style.css). Добавляется на каждый печатный лист под наклейками.
+  function markingScaleMarkerHtml() {
+    return `<div class="marking-scale-marker" role="img"
+      aria-label="Контрольный размер: 100 мм. Приложите линейку к экрану или бумаге для проверки масштаба">
+      <span class="marking-scale-marker-line"></span>
+      <span class="marking-scale-marker-text">Контрольный размер: 100 мм. Приложите линейку к экрану/бумаге для проверки масштаба</span>
+    </div>`;
+  }
+
+  function markingRulerHtml() {
+    return `<div class="marking-ruler" role="img" aria-label="Контрольная линейка длиной 100 мм">
+      <span class="marking-ruler-bar"></span>
+      <span class="marking-ruler-label">0 — 100 мм</span>
+      <span class="marking-ruler-note">масштаб 1:1 · проверьте перед печатью</span>
+    </div>`;
+  }
+
+  function markingStickerHtml(sticker, printMode, flow = false) {
+    const classes = ['marking-sticker'];
+    if (sticker.kind === 'wire') classes.push('is-wire');
+    if (sticker.isCopy) classes.push('is-copy');
+    if (sticker.isGroup) classes.push('is-group');
+    if (sticker.kind === 'module' && sticker.widthMm > MM_PER_MODULE) classes.push('is-wide');
+    if (sticker.orientation === 'vertical') classes.push('is-vertical');
+    // Бирки проводов идут обычным потоком внизу листа, а не в абсолютной
+    // раскладке — поэтому для них не задаём left/top.
+    if (flow) classes.push('is-flow');
+    if (!printMode && selectedMarkingId && sticker.ids.includes(selectedMarkingId)) {
+      classes.push('is-selected');
+    }
+    const style = flow
+      ? `width:${sticker.widthMm}mm;height:${sticker.heightMm}mm`
+      : `left:${sticker.x}mm;top:${sticker.y}mm;width:${sticker.widthMm}mm;height:${sticker.heightMm}mm`;
+    const icon = MARKING_ICONS[sticker.icon]?.svg
+      ? `<span class="sticker-icon" aria-hidden="true"><svg viewBox="0 0 24 24">${MARKING_ICONS[sticker.icon].svg}</svg></span>`
+      : '';
+    const copy = `<span class="sticker-copy">
+      <span class="sticker-main">${escapeHtml(sticker.main || '')}</span>
+      ${sticker.sub ? `<span class="sticker-sub">${escapeHtml(sticker.sub)}</span>` : ''}
+      ${sticker.brand ? `<span class="sticker-brand">${escapeHtml(sticker.brand)}</span>` : ''}
+    </span>`;
+    if (printMode) {
+      return `<div class="${classes.join(' ')}" style="${style}">${icon}${copy}</div>`;
+    }
+    const title = `${sticker.main || 'Наклейка'}${sticker.sub ? ' · ' + sticker.sub : ''} — клик для редактирования`;
+    return `<button type="button" class="${classes.join(' ')}" style="${style}"
+      data-marking-id="${escapeHtml(sticker.primary.id)}" title="${escapeHtml(title)}">${icon}${copy}</button>`;
+  }
+
+  // Физический лист А4: белый фон, чёрный текст, реальные миллиметры.
+  // Отступы применяются именно к этому контейнеру (padding), а не к @page —
+  // поэтому на экране и в печати получается один и тот же лист 1:1.
+  function markingSheetHtml(page, index, total, layout, printMode) {
+    const settings = layout.settings;
+    const vars = [
+      `--sheet-w:${layout.sheetW}mm`,
+      `--sheet-h:${layout.sheetH}mm`,
+      `--pad-top:${settings.marginTop}mm`,
+      `--pad-right:${settings.marginRight}mm`,
+      `--pad-bottom:${settings.marginBottom}mm`,
+      `--pad-left:${settings.marginLeft}mm`,
+      `--marker-h:${MARKING_SCALE_MARKER_HEIGHT_MM}mm`,
+      `--legend-h:${markingLegendHeightMm(layout.legendEntries)}mm`
+    ].join(';');
+    return `<div class="a4-page" style="${vars}">
+      <div class="a4-page-inner">
+        ${settings.showRuler ? markingRulerHtml() : ''}
+        <div class="a4-rows">
+          ${page.html || '<p class="a4-empty">На этой странице нет наклеек</p>'}
+        </div>
+        <div class="a4-footer">
+          ${markingLegendHtml(layout.legendEntries)}
+          ${markingScaleMarkerHtml()}
+        </div>
+      </div>
+      ${printMode ? '' : `<span class="a4-page-label">Страница ${index + 1} из ${total}</span>`}
+    </div>`;
+  }
+
+  // @page не задаётся инлайном в разметке, поэтому правило генерируется
+  // динамически. Оно идёт после style.css, а значит переопределяет настройки A4
+  // по умолчанию для журнала.
+  function updateMarkingPageStyle(context) {
+    if (!dom.markingPageStyle) return;
+    if (context !== 'marking') {
+      dom.markingPageStyle.textContent = '';
+      return;
+    }
+    // Жёстко задаём A4 альбомную ориентацию и нулевые поля страницы.
+    // Любые ненулевые поля заставят браузер «подогнать» содержимое и
+    // нарушат масштаб 1:1 (1 модуль = 18 мм, контрольная линия = 100 мм).
+    dom.markingPageStyle.textContent = '@page { size: A4 landscape; margin: 0; }';
+  }
+
+  function syncMarkingSettingsUI() {
+    // На листе 1:1 размер и поля страницы фиксированы (A4 landscape, 0 мм).
+    const settings = dom.markingView?.dataset.mode === 'sheet'
+      ? sheetPageSettings()
+      : markingSettings();
+    const fields = {
+      sheet: dom.markingSize,
+      orientation: dom.markingOrientation,
+      marginTop: dom.markingMarginTop,
+      marginRight: dom.markingMarginRight,
+      marginBottom: dom.markingMarginBottom,
+      marginLeft: dom.markingMarginLeft
+    };
+    Object.entries(fields).forEach(([key, input]) => {
+      if (input && document.activeElement !== input) input.value = String(settings[key]);
+    });
+    if (dom.markingRulerToggle) dom.markingRulerToggle.checked = settings.showRuler;
+    if (dom.markingRulerState) dom.markingRulerState.textContent = settings.showRuler ? 'Вкл' : 'Выкл';
+    if (dom.markingPrintLegend) dom.markingPrintLegend.checked = settings.printLegend;
+    if (dom.markingPrintLegendState) {
+      dom.markingPrintLegendState.textContent = settings.printLegend ? 'Вкл' : 'Выкл';
+    }
+  }
+
+  function renderMarking() {
+    if (!project) return null;
+    syncMarkings();
+    syncMarkingSettingsUI();
+    const layout = buildSheetPages(false);
+    const printLayout = buildSheetPages(true);
+    const screenHtml = layout.pages
+      .map((page, index) => markingSheetHtml(page, index, layout.pages.length, layout, false))
+      .join('');
+    const printHtml = printLayout.pages
+      .map((page, index) => markingSheetHtml(page, index, printLayout.pages.length, printLayout, true))
+      .join('');
+    if (dom.markingSheetArea) dom.markingSheetArea.innerHTML = screenHtml;
+    if (dom.markingPrintSheet) dom.markingPrintSheet.innerHTML = printHtml;
+
+    const units = markingUnits();
+    const moduleCount = units.filter((unit) => unit.kind === 'module').length;
+    const wireCount = units.filter((unit) => unit.kind === 'wire').length;
+    if (dom.markingSubtitle) {
+      dom.markingSubtitle.textContent =
+        `${project.name} · ${moduleCount} ${plural(moduleCount, ['наклейка', 'наклейки', 'наклеек'])}` +
+        `${wireCount ? ` · ${wireCount} ${plural(wireCount, ['бирка', 'бирки', 'бирок'])}` : ''}` +
+        ` · ${layout.pages.length} ${plural(layout.pages.length, ['лист', 'листа', 'листов'])}` +
+        ` · ${settingsOrientationLabel(layout.settings)}`;
+    }
+    updateMarkingPageStyle(printContext === 'marking' ? 'marking' : null);
+    // Лента редактора строится из тех же наклеек, что и печатный лист.
+    renderTape();
+    if (dom.markingEditor && !dom.markingEditor.hidden) positionMarkingEditor();
+    return layout;
+  }
+
+  function settingsOrientationLabel(settings) {
+    return `${settings.sheet}, ${settings.orientation === 'portrait' ? 'портрет' : 'ландшафт'}`;
+  }
+
+  function onMarkingSettingChange() {
+    const settings = markingSettings();
+    if (dom.markingSize) settings.sheet = dom.markingSize.value;
+    if (dom.markingOrientation) settings.orientation = dom.markingOrientation.value;
+    const margins = [
+      [dom.markingMarginTop, 'marginTop'],
+      [dom.markingMarginRight, 'marginRight'],
+      [dom.markingMarginBottom, 'marginBottom'],
+      [dom.markingMarginLeft, 'marginLeft']
+    ];
+    margins.forEach(([input, key]) => {
+      const value = Number(input?.value);
+      if (input && Number.isFinite(value)) settings[key] = clamp(Math.round(value), 0, 40);
+    });
+    if (dom.markingRulerToggle) settings.showRuler = dom.markingRulerToggle.checked;
+    if (dom.markingPrintLegend) settings.printLegend = dom.markingPrintLegend.checked;
+    project.markingSettings = settings;
+    persistProject();
+    commitHistory();
+    renderMarking();
+  }
+
+  function resolveMarkingAnchor() {
+    if (!markingEditorAnchor) return null;
+    if (markingEditorAnchor.type === 'module') {
+      return dom.moduleLayer?.querySelector(`[data-module-id="${markingEditorAnchor.id}"]`) || null;
+    }
+    if (!dom.markingSheetArea) return null;
+    const items = dom.markingSheetArea.querySelectorAll('[data-marking-id]');
+    return Array.from(items).find((item) => item.dataset.markingId === markingEditorAnchor.id) || null;
+  }
+
+  function positionMarkingEditor() {
+    const panel = dom.markingEditor;
+    const anchor = resolveMarkingAnchor();
+    if (!panel || panel.hidden || !anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    const width = panel.offsetWidth || 326;
+    const height = panel.offsetHeight || 520;
+    let left = rect.right + 12;
+    if (left + width > window.innerWidth - 8) left = rect.left - width - 12;
+    if (left < 8) left = clamp(rect.left, 8, Math.max(8, window.innerWidth - width - 8));
+    let top = rect.top - 10;
+    if (top + height > window.innerHeight - 8) top = window.innerHeight - height - 8;
+    if (top < 8) top = 8;
+    panel.style.left = `${Math.round(left)}px`;
+    panel.style.top = `${Math.round(top)}px`;
+  }
+
+  function highlightSelectedSticker() {
+    if (!dom.markingSheetArea) return;
+    dom.markingSheetArea.querySelectorAll('[data-marking-id]').forEach((element) => {
+      element.classList.toggle('is-selected', element.dataset.markingId === selectedMarkingId);
+    });
+  }
+
+  function markingIconPickerHtml() {
+    return Object.entries(MARKING_ICONS).map(([key, icon]) => `
+      <button class="marking-icon-option" type="button" data-icon="${escapeHtml(key)}"
+              title="${escapeHtml(icon.label)}" aria-label="${escapeHtml(icon.label)}"
+              aria-pressed="false">${icon.svg
+                ? `<svg viewBox="0 0 24 24" aria-hidden="true">${icon.svg}</svg>`
+                : '<span aria-hidden="true">—</span>'}</button>`).join('');
+  }
+
+  function fillMarkingEditor(marking) {
+    if (!marking || !dom.markingEditor) return;
+    const data = markingData(marking);
+    const module = marking.kind === 'module' ? moduleById(marking.refId) : null;
+    if (dom.markingEditorTitle) {
+      dom.markingEditorTitle.textContent = marking.kind === 'wire'
+        ? 'Бирка провода'
+        : (marking.isGroup ? 'Группа наклеек' : (marking.isCopy ? 'Копия наклейки' : 'Наклейка модуля'));
+    }
+    if (dom.markingMainInput) dom.markingMainInput.value = data.main;
+    if (dom.markingTextMode) dom.markingTextMode.value = marking.textMode;
+    if (dom.markingTextMode) dom.markingTextMode.disabled = marking.kind === 'wire' || marking.isCopy;
+    if (dom.markingTextOrientation) dom.markingTextOrientation.value = marking.orientation;
+    if (dom.markingWidthMm) dom.markingWidthMm.value = String(marking.widthMm || data.widthMm);
+    if (dom.markingPreset) {
+      const preset = marking.widthMm || ([18, 36, 54, 72, 108].includes(data.widthMm) ? data.widthMm : 0);
+      dom.markingPreset.value = String(preset);
+    }
+    if (dom.markingIconPicker) {
+      dom.markingIconPicker.querySelectorAll('[data-icon]').forEach((button) => {
+        const active = button.dataset.icon === marking.icon;
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+    }
+    if (dom.markingGroup) {
+      dom.markingGroup.textContent = marking.groupId ? 'Разгруппировать' : 'Сгруппировать';
+      dom.markingGroup.disabled = marking.kind === 'wire' || marking.isCopy;
+    }
+    if (dom.markingEditorMeta) {
+      const parts = [
+        `Реальный размер: ${data.widthMm} × ${data.heightMm} мм`,
+        data.sub,
+        data.brand ? `Бренд: ${data.brand}` : '',
+        module ? `Модуль: ${module.tag || '—'}` : ''
+      ].filter(Boolean);
+      dom.markingEditorMeta.textContent = parts.join(' · ');
+    }
+  }
+
+  function openMarkingEditor(markingId, anchor) {
+    const marking = markings().find((item) => item.id === markingId);
+    if (!marking || !dom.markingEditor) return;
+    selectedMarkingId = markingId;
+    // Якорь может быть как DOM-элементом (клик по наклейке/модулю), так и
+    // готовым описанием { type, id } (после клонирования и вставки).
+    if (anchor && anchor.nodeType === 1) {
+      markingEditorAnchor = anchor.hasAttribute?.('data-module-id')
+        ? { type: 'module', id: anchor.getAttribute('data-module-id') }
+        : { type: 'sticker', id: markingId };
+    } else {
+      markingEditorAnchor = anchor || { type: 'sticker', id: markingId };
+    }
+    fillMarkingEditor(marking);
+    dom.markingEditor.hidden = false;
+    highlightSelectedSticker();
+    positionMarkingEditor();
+  }
+
+  function closeMarkingEditor() {
+    if (dom.markingEditor) dom.markingEditor.hidden = true;
+    selectedMarkingId = null;
+    markingEditorAnchor = null;
+    highlightSelectedSticker();
+  }
+
+  function commitMarkingChange(message, fullRender = false) {
+    syncMarkings();
+    persistProject();
+    commitHistory();
+    if (fullRender) renderAll();
+    else renderMarking();
+    if (message) showToast(message, 'success', 1800);
+  }
+
+  function updateMarkingFromEditor(render = true) {
+    const marking = markings().find((item) => item.id === selectedMarkingId);
+    if (!marking || !dom.markingEditor) return;
+    const text = String(dom.markingMainInput?.value || '').trim().slice(0, MARKING_MAIN_LENGTH);
+    const orientation = dom.markingTextOrientation?.value === 'vertical' ? 'vertical' : 'horizontal';
+    const width = Number(dom.markingWidthMm?.value);
+    marking.orientation = orientation;
+    marking.widthMm = Number.isFinite(width) && width > 0
+      ? Math.round(clamp(width, 6, 300))
+      : 0;
+    marking.icon = MARKING_ICONS[dom.markingIconPicker?.querySelector('.marking-icon-option.is-active')?.dataset.icon]
+      ? dom.markingIconPicker.querySelector('.marking-icon-option.is-active').dataset.icon
+      : 'none';
+
+    if (marking.kind === 'wire') {
+      const connection = project.connections.find((item) => item.id === marking.refId);
+      if (connection && !marking.isCopy) connection.label = text;
+      else marking.mainSnapshot = text;
+    } else if (marking.isCopy) {
+      marking.mainSnapshot = text;
+    } else if (marking.textMode === 'tag') {
+      const module = moduleById(marking.refId);
+      if (module) module.tag = text.slice(0, 10).toUpperCase() || module.tag;
+    } else if (marking.textMode === 'name') {
+      const module = moduleById(marking.refId);
+      if (module) module.name = text.slice(0, MAX_MODULE_NAME_LENGTH) || module.name;
+    } else {
+      const module = moduleById(marking.refId);
+      if (module) module.description = text;
+    }
+    if (render) commitMarkingChange('Наклейка обновлена', true);
+  }
+
+  function cloneMarking(markingId = selectedMarkingId) {
+    const source = markings().find((item) => item.id === markingId);
+    if (!source) return;
+    const data = markingData(source);
+    const copy = {
+      ...JSON.parse(JSON.stringify(source)),
+      id: makeId('mrk'),
+      hidden: false,
+      isCopy: true,
+      groupId: '',
+      mainSnapshot: data.main,
+      subSnapshot: data.sub,
+      brandSnapshot: data.brand
+    };
+    const index = markings().findIndex((item) => item.id === source.id);
+    project.markings.splice(index + 1, 0, copy);
+    selectedMarkingId = copy.id;
+    markingEditorAnchor = { type: 'sticker', id: copy.id };
+    commitMarkingChange('Наклейка склонирована');
+    fillMarkingEditor(copy);
+  }
+
+  function deleteMarking(markingId = selectedMarkingId) {
+    const marking = markings().find((item) => item.id === markingId);
+    if (!marking) return;
+    if (marking.isCopy) {
+      project.markings = markings().filter((item) => item.id !== marking.id);
+      // Копии с общим groupId больше нет — группа распадается.
+    } else {
+      marking.hidden = true;
+    }
+    closeMarkingEditor();
+    commitMarkingChange('Наклейка удалена с листа');
+  }
+
+  function toggleMarkingGroup(markingId = selectedMarkingId) {
+    const marking = markings().find((item) => item.id === markingId);
+    if (!marking || marking.kind === 'wire' || marking.isCopy) return;
+    if (marking.groupId) {
+      const groupId = marking.groupId;
+      markings().forEach((item) => {
+        if (item.groupId === groupId) item.groupId = '';
+      });
+      commitMarkingChange('Группа разъединена');
+      fillMarkingEditor(marking);
+      return;
+    }
+    const list = syncMarkings();
+    const index = list.findIndex((item) => item.id === marking.id);
+    const neighbor = list.slice(index + 1).find((item) =>
+      item.kind === 'module' && !item.isCopy && !item.hidden && !item.groupId);
+    if (!neighbor) {
+      showToast('Справа нет свободной наклейки для объединения', 'error', 2400);
+      return;
+    }
+    const groupId = makeId('grp');
+    marking.groupId = groupId;
+    neighbor.groupId = groupId;
+    commitMarkingChange('Наклейки объединены');
+    fillMarkingEditor(marking);
+  }
+
+  function copyMarkingToClipboard() {
+    const marking = markings().find((item) => item.id === selectedMarkingId);
+    if (!marking) {
+      showToast('Выберите наклейку для копирования', 'error', 2200);
+      return;
+    }
+    const data = markingData(marking);
+    markingClipboard = {
+      ...JSON.parse(JSON.stringify(marking)),
+      mainSnapshot: data.main,
+      subSnapshot: data.sub,
+      brandSnapshot: data.brand
+    };
+    showToast('Наклейка скопирована · Ctrl+V — вставить', 'success', 1800);
+  }
+
+  function pasteMarkingFromClipboard() {
+    if (!markingClipboard) {
+      showToast('Буфер наклеек пуст — сначала Ctrl+C', 'error', 2200);
+      return;
+    }
+    const copy = {
+      ...JSON.parse(JSON.stringify(markingClipboard)),
+      id: makeId('mrk'),
+      hidden: false,
+      isCopy: true,
+      groupId: ''
+    };
+    const anchor = markings().find((item) => item.id === selectedMarkingId);
+    const index = anchor ? markings().findIndex((item) => item.id === anchor.id) : markings().length - 1;
+    project.markings.splice(index + 1, 0, copy);
+    selectedMarkingId = copy.id;
+    markingEditorAnchor = { type: 'sticker', id: copy.id };
+    commitMarkingChange('Наклейка вставлена');
+    fillMarkingEditor(copy);
+  }
+
+  function autoNumberMarkings() {
+    syncMarkings();
+    const counters = new Map();
+    orderedModulesForMarking().forEach(({ module }) => {
+      const prefixRaw = LIBRARY_BY_ID.get(module.libraryId)?.tagPrefix || 'QF';
+      const prefix = /^[A-Za-zА-Яа-я]{1,4}$/u.test(prefixRaw) ? prefixRaw.toUpperCase() : 'QF';
+      const number = (counters.get(prefix) || 0) + 1;
+      counters.set(prefix, number);
+      module.tag = `${prefix}${number}`;
+      const marking = markings().find((item) =>
+        item.kind === 'module' && item.refId === module.id && !item.isCopy);
+      if (marking) marking.textMode = 'tag';
+    });
+    markings().filter((item) => item.isCopy && item.kind === 'module').forEach((copy) => {
+      const module = moduleById(copy.refId);
+      if (!module) return;
+      copy.mainSnapshot = copy.textMode === 'tag'
+        ? module.tag
+        : (copy.textMode === 'name' ? module.name : (module.description || module.tag));
+    });
+    commitMarkingChange('Теги присвоены по порядку слева направо', true);
+    if (!dom.markingEditor.hidden && selectedMarkingId) {
+      fillMarkingEditor(markings().find((item) => item.id === selectedMarkingId));
+    }
+  }
+
+  function resetMarkings() {
+    project.markings = [];
+    project.markingSettings = createMarkingSettings();
+    closeMarkingEditor();
+    markingClipboard = null;
+    commitMarkingChange('Маркировка сгенерирована заново', true);
+  }
+
+  function exportMarkingJson() {
+    const settings = markingSettings();
+    const labels = syncMarkings().map((marking) => {
+      const data = markingData(marking);
+      return {
+        id: marking.id,
+        kind: marking.kind,
+        refId: marking.refId,
+        main: data.main,
+        sub: data.sub,
+        brand: data.brand,
+        orientation: marking.orientation,
+        widthMm: data.widthMm,
+        icon: marking.icon,
+        color: marking.color,
+        groupId: marking.groupId,
+        hidden: marking.hidden,
+        isCopy: marking.isCopy
+      };
+    });
+    const payload = {
+      format: 'shchit-studio-marking',
+      schemaVersion: 1,
+      project: project?.name || 'Новый щит',
+      createdAt: new Date().toISOString(),
+      settings,
+      labels
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    downloadBlob(blob, `marking-${safeFileName(project?.name)}-${fileDate()}.json`);
+    showToast('Маркировка экспортирована в JSON', 'success', 2600);
+  }
+
+  /* ====================================================================
+     РЕДАКТОР ЛЕНТЫ — ячейки на DIN-рейке, масштаб 1:1
+     ==================================================================== */
+
+  // Значок назначения в ячейке: SVG-пиктограмма (печатается чётко).
+  function tapeIconHtml(iconKey, className) {
+    const icon = MARKING_ICONS[iconKey];
+    if (!icon || iconKey === 'none') return '';
+    if (icon.svg) {
+      return `<span class="${className}" aria-hidden="true"><svg viewBox="0 0 24 24">${icon.svg}</svg></span>`;
+    }
+    return icon.emoji
+      ? `<span class="${className}" aria-hidden="true">${escapeHtml(icon.emoji)}</span>`
+      : '';
+  }
+
+  // Текст зоны 1: бренд, модель и номинал устройства.
+  function tapeTitleFor(marking) {
+    const module = marking?.kind === 'module' ? moduleById(marking.refId) : null;
+    const libraryItem = module ? LIBRARY_BY_ID.get(module.libraryId) : null;
+    const brand = module?.brand || libraryItem?.brand || MODULE_BRANDS[module?.type] || '';
+    const model = libraryItem?.sku || module?.sku || module?.name || '';
+    const name = String(module?.name || '');
+    const poles = name.match(/\b([1-6])P\b/i);
+    const rating = name.match(/\b(C\s?\d{1,3}|\d{1,3}\s?A)\b/i);
+    const meta = [poles ? `${poles[1]}P` : '', rating ? rating[1].replace(/\s+/g, '') : '']
+      .filter(Boolean).join(' · ') || libraryItem?.typeLabel || module?.type || '';
+    return { brand, model, meta };
+  }
+
+  function tapeDescriptionFor(marking) {
+    const module = marking?.kind === 'module' ? moduleById(marking.refId) : null;
+    if (!module) return '';
+    const description = String(module.description || '').trim();
+    if (description) return description;
+    const libraryItem = LIBRARY_BY_ID.get(module.libraryId);
+    return libraryItem?.typeLabel || module.type || 'Модуль';
+  }
+
+  // Ширина наклейки в ленте равна реальной ширине модуля на рейке:
+  // 1P = 18 мм, 3P = 54 мм. Пользовательская ширина из «Листа 1:1» сюда
+  // не попадает — иначе наклейки перестанут совпадать со слотами рейки.
+  function tapeWidthFor(marking) {
+    const module = marking?.kind === 'module' ? moduleById(marking.refId) : null;
+    if (!module) return markingData(marking).widthMm;
+    return Math.max(1, Math.round(Number(module.width) || 1)) * MM_PER_MODULE;
+  }
+
+  // Раскладка по DIN-рейкам: для каждой рейки — свой ряд. Модули сортируются
+  // по slot, а пропущенные слоты между ними заполняются заглушками шириной
+  // 18 мм за слот. Благодаря этому наклейки физически повторяют рейку.
+  function tapeLayout() {
+    const list = syncMarkings().filter((item) =>
+      item.kind === 'module' && !item.hidden);
+    // Копии наклеек не занимают слот — приписываем их к рейке модуля-источника.
+    const copiesByRail = new Map();
+    list.forEach((marking) => {
+      if (!marking.isCopy) return;
+      const location = railOfModule(marking.refId);
+      if (!location) return;
+      if (!copiesByRail.has(location.rail.id)) copiesByRail.set(location.rail.id, []);
+      copiesByRail.get(location.rail.id).push(marking);
+    });
+
+    const rows = project.rails.map((rail, railIndex) => {
+      const modules = rail.modules
+        .map((module) => ({
+          module,
+          marking: list.find((item) => item.refId === module.id && !item.isCopy) || null,
+          slot: Math.max(0, Math.round(Number(module.slot) || 0)),
+          width: Math.max(1, Math.round(Number(module.width) || 1))
+        }))
+        .filter((entry) => entry.marking)
+        .sort((a, b) => a.slot - b.slot);
+
+      // Объединяем только соседние модули внутри одной рейки.
+      const blocks = [];
+      for (let index = 0; index < modules.length;) {
+        const entry = modules[index];
+        if (entry.marking.groupId) {
+          const members = [entry];
+          let next = index + 1;
+          while (next < modules.length &&
+                 modules[next].marking.groupId === entry.marking.groupId &&
+                 !modules[next].marking.isCopy) {
+            members.push(modules[next]);
+            next += 1;
+          }
+          if (members.length > 1) {
+            blocks.push({
+              marking: entry.marking,
+              members: members.map((item) => item.marking),
+              startSlot: members[0].slot,
+              slots: members.reduce((sum, item) => sum + item.width, 0)
+            });
+            index = next;
+            continue;
+          }
+        }
+        blocks.push({
+          marking: entry.marking,
+          members: [entry.marking],
+          startSlot: entry.slot,
+          slots: entry.width
+        });
+        index += 1;
+      }
+
+      const items = [];
+      let left = 0;
+      let occupiedUntil = 0; // первый свободный слот после предыдущего блока
+      blocks.forEach((block) => {
+        // Заглушка перед блоком: и до первого модуля, и между модулями.
+        if (block.startSlot > occupiedUntil) {
+          const slots = block.startSlot - occupiedUntil;
+          const width = slots * MM_PER_MODULE;
+          items.push({ type: 'spacer', left, width, slots });
+          left += width;
+        }
+        const width = block.members.reduce((sum, marking) => sum + tapeWidthFor(marking), 0);
+        items.push({
+          type: 'module',
+          marking: block.marking,
+          members: block.members,
+          left,
+          width,
+          slots: block.slots,
+          groupText: tapeDescriptionFor(block.marking)
+        });
+        left += width;
+        occupiedUntil = block.startSlot + block.slots;
+      });
+
+      (copiesByRail.get(rail.id) || []).forEach((marking) => {
+        const width = tapeWidthFor(marking);
+        items.push({ type: 'module', marking, members: [marking], left, width, slots: 0, groupText: '' });
+        left += width;
+      });
+
+      return {
+        rail,
+        railIndex,
+        label: `Рейка ${railIndex + 1}`,
+        items,
+        total: left,
+        moduleCount: items.filter((item) => item.type === 'module').length
+      };
+    });
+
+    return { rows, total: rows.reduce((max, row) => Math.max(max, row.total), 0) };
+  }
+
+  // Обратная совместимость: все печатные пути используют единый компактный
+  // горизонтальный шаблон наклейки листа 1:1 (см. sheetStickerHtml).
+  function printStickerHtml(marking, printMode) {
+    return sheetStickerHtml({
+      ids: [marking.id],
+      primary: marking,
+      kind: marking.kind,
+      isCopy: marking.isCopy,
+      isGroup: false,
+      ...markingData(marking)
+    }, printMode);
+  }
+
+  function tapeCellHtml(marking, isGrouped, printMode, isPrintView = false) {
+    if (isPrintView) return printStickerHtml(marking, printMode);
+    const module = marking.kind === 'module' ? moduleById(marking.refId) : null;
+    const title = tapeTitleFor(marking);
+    const tag = String(module?.tag || '').trim() || marking.mainSnapshot || '—';
+    const description = tapeDescriptionFor(marking);
+    const color = HEX_COLOR_RE.test(String(marking.color || ''))
+      ? marking.color.toLowerCase()
+      : DEFAULT_TAPE_COLOR;
+    const classes = ['tape-cell'];
+    if (isGrouped) classes.push('is-grouped');
+    // Многополюсный модуль: текст центрируется на всей ширине наклейки.
+    if (module && Math.max(1, Math.round(Number(module.width) || 1)) > 1) classes.push('is-wide');
+    if (!printMode && selectedTapeMarkingId === marking.id) classes.push('is-selected');
+    const attrs = printMode
+      ? ''
+      : ` type="button" data-marking-id="${escapeHtml(marking.id)}" ` +
+        `title="${escapeHtml(`${tag} · ${description || module?.name || 'Модуль'} — клик для редактирования`)}" ` +
+        `aria-label="${escapeHtml(`Ячейка ${tag}, ${description || module?.name || 'модуль'}`)}"`;
+    const tagName = printMode ? 'div' : 'button';
+    return `<${tagName} class="${classes.join(' ')}" style="--cell-w:${tapeWidthFor(marking)}mm;--tape-color:${color}"${attrs}>
+      <span class="tape-zone tape-zone-top">
+        <span class="tape-brand">${escapeHtml(title.brand)}</span>
+        <span class="tape-model">${escapeHtml(title.model)}</span>
+        <span class="tape-rating">${escapeHtml(title.meta)}</span>
+      </span>
+      <span class="tape-zone tape-zone-icon">
+        ${tapeIconHtml('breaker', 'tape-device-icon')}
+      </span>
+      <span class="tape-zone tape-zone-tag">
+        <span class="tape-tag">${escapeHtml(tag)}</span>
+        <span class="tape-color" aria-hidden="true"></span>
+      </span>
+      <span class="tape-zone tape-zone-desc">
+        ${tapeIconHtml(marking.icon, 'tape-desc-icon')}
+        <span class="tape-desc-text">${escapeHtml(description)}</span>
+      </span>
+    </${tagName}>`;
+  }
+
+  // Заглушка на месте пропущенных слотов рейки. Ширина кратна 18 мм,
+  // поэтому наклейки после неё остаются на своих физических позициях.
+  function tapeSpacerHtml(item) {
+    const title = `${item.slots} ${plural(item.slots, ['пустой слот', 'пустых слота', 'пустых слотов'])}`;
+    return `<div class="tape-spacer" style="--cell-w:${item.width}mm" aria-label="${escapeHtml(title)}" title="${escapeHtml(title)}">` +
+      `<span class="tape-spacer-text">${item.slots} ${plural(item.slots, ['слот', 'слота', 'слотов'])}</span></div>`;
+  }
+
+  // Один ряд рейки. Используется и лентой, и печатным листом — разница
+  // только в том, в какой контейнер попадает результат.
+  function markingRowHtml(row, printMode, isPrintView = false) {
+    const cells = row.items.map((item) =>
+      item.type === 'spacer'
+        ? tapeSpacerHtml(item)
+        : tapeCellHtml(item.marking, item.members.length > 1, printMode, isPrintView)
+    ).join('');
+    // На печатном листе общая подпись не накладывается на компактную наклейку.
+    const groupLabels = isPrintView ? '' : row.items
+      .filter((item) => item.type === 'module' && item.members.length > 1)
+      .map((item) => `<div class="tape-group-label" style="left:${item.left}mm;width:${item.width}mm">` +
+        `${escapeHtml(item.groupText || 'Общая подпись')}</div>`)
+      .join('');
+    const trackContent = row.items.length
+      ? cells + groupLabels
+      : `<div class="tape-empty">На этой рейке нет модулей</div>`;
+    const rail = `<div class="marking-rail">` +
+      `<div class="tape-rail-track" style="width:${row.width || row.total || 90}mm">${trackContent}</div>` +
+      `</div>`;
+    // Слишком длинный фрагмент рейки, который не разбить по модулям,
+    // уменьшается до ширины листа. Обычные ряды остаются 1:1.
+    const scale = row.scale && row.scale < 1 ? row.scale : 1;
+    const content = scale < 1
+      ? `<div class="tape-rail-scale" style="--rail-scale:${scale.toFixed(4)};` +
+        `--scaled-w:${(row.width * scale).toFixed(2)}mm;` +
+        `--scaled-h:${(TAPE_CELL_HEIGHT_MM * scale).toFixed(2)}mm">${rail}</div>`
+      : rail;
+    return `<section class="tape-rail-row${row.continuation ? ' is-continuation' : ''}" ` +
+      `data-rail-index="${row.railIndex}">
+        <div class="tape-rail-heading">
+          <span class="tape-rail-name">${escapeHtml(row.label)}</span>
+          <span class="tape-rail-meta">${row.moduleCount} ` +
+            `${plural(row.moduleCount, ['модуль', 'модуля', 'модулей'])} · ${row.rail.capacity} P</span>
+          ${row.continuation ? '<span class="tape-continuation">Продолжение рейки</span>' : ''}
+        </div>
+        ${content}
+      </section>`;
+  }
+
+  // Длинную заглушку можно разрезать на куски по ширине листа — так она
+  // не растягивает ряд и не ломает масштаб соседних наклеек.
+  function splitTapeSpacer(item, maxWidth) {
+    if (item.width <= maxWidth) return [item];
+    const parts = [];
+    let left = item.left;
+    let restWidth = item.width;
+    let restSlots = item.slots;
+    while (restWidth > maxWidth + 0.01) {
+      const slots = Math.max(1, Math.floor(maxWidth / MM_PER_MODULE));
+      const width = slots * MM_PER_MODULE;
+      parts.push({ ...item, left, width, slots });
+      left += width;
+      restWidth -= width;
+      restSlots -= slots;
+    }
+    if (restWidth > 0) {
+      parts.push({
+        ...item,
+        left,
+        width: restWidth,
+        slots: Math.max(1, restSlots || Math.round(restWidth / MM_PER_MODULE))
+      });
+    }
+    return parts;
+  }
+
+  // Разбивает рейку на части, которые влезают в доступную ширину листа.
+  // Каждая часть сохраняет свои пустые слоты и ширину многополюсных модулей.
+  function splitTapeRow(row, maxWidth) {
+    if (!maxWidth || row.total <= maxWidth) {
+      return [{ ...row, type: 'rail', width: row.total, scale: 1 }];
+    }
+    const flat = [];
+    row.items.forEach((item) => {
+      if (item.type === 'spacer') flat.push(...splitTapeSpacer(item, maxWidth));
+      else flat.push(item);
+    });
+    const chunks = [];
+    let items = [];
+    let width = 0;
+    flat.forEach((item) => {
+      if (items.length && width + item.width > maxWidth) {
+        chunks.push({ items, width });
+        items = [];
+        width = 0;
+      }
+      items.push(item);
+      width += item.width;
+    });
+    if (items.length) chunks.push({ items, width });
+    if (!chunks.length) return [{ ...row, type: 'rail', width: row.total, scale: 1 }];
+    return chunks.map((chunk, index) => {
+      const startLeft = chunk.items[0]?.left || 0;
+      const scale = chunk.width > maxWidth ? Math.max(0.1, maxWidth / chunk.width) : 1;
+      return {
+        ...row,
+        type: 'rail',
+        items: chunk.items.map((item) => ({ ...item, left: item.left - startLeft })),
+        width: chunk.width,
+        total: chunk.width,
+        scale,
+        continuation: index > 0,
+        moduleCount: chunk.items.filter((item) => item.type === 'module').length
+      };
+    });
+  }
+
+  // Единый генератор разметки наклеек. Ряды реек, заглушки пустых слотов
+  // и ширина многополюсных модулей считаются здесь один раз; «Лента» и
+  // «Лист 1:1» отличаются только CSS-контейнером, в который кладут html.
+  function generateMarkingHTML(options = {}) {
+    const printMode = options.printMode === true;
+    // isPrintView — признак вкладки «Лист 1:1». Лента сохраняет объёмные
+    // цветные ячейки .tape-cell, лист использует компактные .print-sticker.
+    const isPrintView = options.isPrintView === true;
+    const maxWidth = Number(options.maxWidth) > 0 ? Number(options.maxWidth) : null;
+    const layout = tapeLayout();
+    const parts = [];
+    layout.rows.forEach((row) => {
+      splitTapeRow(row, maxWidth).forEach((part) => parts.push(part));
+    });
+    const wires = wireTagsHtml(printMode, maxWidth, isPrintView);
+    if (wires.html) {
+      parts.push({ type: 'wires', html: wires.html, width: wires.width, height: wires.height });
+    }
+    const rendered = parts.map((part) => ({
+      ...part,
+      html: part.type === 'wires' ? part.html : markingRowHtml(part, printMode, isPrintView)
+    }));
+    return {
+      html: rendered.map((part) => part.html).join(''),
+      layout,
+      parts: rendered,
+      width: Math.max(layout.total, 36)
+    };
+  }
+
+  function buildTapeMarkup(printMode) {
+    const generated = generateMarkingHTML({ printMode });
+    return { html: generated.html, width: generated.width, layout: generated.layout };
+  }
+
+  function renderTape() {
+    if (!dom.markingTape || !project) return;
+    if (selectedTapeMarkingId) {
+      const exists = markings().some((item) =>
+        item.id === selectedTapeMarkingId && item.kind === 'module' && !item.hidden);
+      if (!exists) selectedTapeMarkingId = null;
+    }
+    const tape = buildTapeMarkup(false);
+    dom.markingTape.innerHTML = tape.html;
+    dom.markingTape.style.width = `${tape.width}mm`;
+    if (dom.markingTapeViewport) {
+      dom.markingTapeViewport.classList.toggle('is-picking', Boolean(tapePendingIcon));
+    }
+    updateTapeProps();
+  }
+
+  function tapeToolButtonHtml(key, icon) {
+    const glyph = icon.svg
+      ? `<span class="marking-tool-glyph"><svg viewBox="0 0 24 24">${icon.svg}</svg></span>`
+      : `<span class="marking-tool-glyph" aria-hidden="true">${escapeHtml(icon.emoji || '·')}</span>`;
+    return `<button class="marking-tool" type="button" data-tape-icon="${escapeHtml(key)}"
+      title="${escapeHtml(icon.label)}" aria-label="${escapeHtml(icon.label)}"
+      aria-pressed="false">${glyph}<span class="marking-tool-label">${escapeHtml(icon.label)}</span></button>`;
+  }
+
+  function renderTapeTools() {
+    if (!dom.markingToolsList) return;
+    dom.markingToolsList.innerHTML = Object.entries(MARKING_ICONS)
+      .filter(([key]) => key !== 'none')
+      .map(([key, icon]) => tapeToolButtonHtml(key, icon)).join('');
+    if (dom.tapeIconPicker) {
+      dom.tapeIconPicker.innerHTML = Object.entries(MARKING_ICONS).map(([key, icon]) => `
+        <button class="marking-icon-option" type="button" data-icon="${escapeHtml(key)}"
+                title="${escapeHtml(icon.label)}" aria-label="${escapeHtml(icon.label)}"
+                aria-pressed="false">${icon.svg
+                  ? `<svg viewBox="0 0 24 24" aria-hidden="true">${icon.svg}</svg>`
+                  : `<span aria-hidden="true">${escapeHtml(icon.emoji || '—')}</span>`}</button>`).join('');
+    }
+    if (dom.tapeColorSwatches) {
+      dom.tapeColorSwatches.innerHTML = MARKING_TAPE_COLORS.map((color) => `
+        <button class="tape-color-swatch" type="button" data-color="${escapeHtml(color.value)}"
+                style="--swatch:${escapeHtml(color.value)}" title="${escapeHtml(color.label)}"
+                aria-label="${escapeHtml(color.label)}" aria-pressed="false"></button>`).join('');
+    }
+    updateTapeToolsState();
+  }
+
+  function updateTapeToolsState() {
+    if (dom.markingToolsList) {
+      dom.markingToolsList.querySelectorAll('[data-tape-icon]').forEach((button) => {
+        const active = button.dataset.tapeIcon === tapePendingIcon;
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+    }
+    if (dom.markingToolHint) {
+      dom.markingToolHint.textContent = tapePendingIcon
+        ? `Выбран: ${MARKING_ICONS[tapePendingIcon]?.label || ''} · кликните по ячейке`
+        : 'Выберите значок';
+    }
+    if (dom.markingTapeViewport) {
+      dom.markingTapeViewport.classList.toggle('is-picking', Boolean(tapePendingIcon));
+    }
+  }
+
+  function updateTapeProps() {
+    const marking = markings().find((item) => item.id === selectedTapeMarkingId);
+    const hasSelection = Boolean(marking && marking.kind === 'module');
+    if (dom.tapePropsEmpty) dom.tapePropsEmpty.hidden = hasSelection;
+    if (dom.tapePropsBody) dom.tapePropsBody.hidden = !hasSelection;
+    if (!hasSelection) {
+      if (dom.tapePropsTarget) dom.tapePropsTarget.textContent = 'Элемент не выбран';
+      return;
+    }
+    const module = moduleById(marking.refId);
+    const libraryItem = module ? LIBRARY_BY_ID.get(module.libraryId) : null;
+    const data = markingData(marking);
+    if (dom.tapePropsTarget) {
+      dom.tapePropsTarget.textContent =
+        `${module?.tag || '—'} · ${libraryItem?.typeLabel || module?.type || 'модуль'}`;
+    }
+    if (dom.tapeTagInput && document.activeElement !== dom.tapeTagInput) {
+      dom.tapeTagInput.value = module?.tag || '';
+    }
+    if (dom.tapeDescInput && document.activeElement !== dom.tapeDescInput) {
+      dom.tapeDescInput.value = String(module?.description || '');
+    }
+    if (dom.tapeIconPicker) {
+      dom.tapeIconPicker.querySelectorAll('[data-icon]').forEach((button) => {
+        const active = button.dataset.icon === marking.icon;
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+    }
+    if (dom.tapeColorSwatches) {
+      dom.tapeColorSwatches.querySelectorAll('[data-color]').forEach((button) => {
+        const active = button.dataset.color === marking.color;
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+    }
+    if (dom.tapeColorCustom) dom.tapeColorCustom.value = marking.color || DEFAULT_TAPE_COLOR;
+    if (dom.tapeMergeCheck) dom.tapeMergeCheck.checked = Boolean(marking.groupId);
+    if (dom.tapePropsMeta) {
+      dom.tapePropsMeta.textContent = [
+        `Реальный размер: ${data.widthMm} × ${data.heightMm} мм`,
+        module?.name || '',
+        libraryItem?.brand ? `Бренд: ${libraryItem.brand}` : ''
+      ].filter(Boolean).join(' · ');
+    }
+  }
+
+  function selectTapeMarking(markingId) {
+    selectedTapeMarkingId = markingId;
+    if (tapePendingIcon) {
+      const marking = markings().find((item) => item.id === markingId);
+      if (marking) {
+        marking.icon = tapePendingIcon;
+        tapePendingIcon = null;
+        updateTapeToolsState();
+        commitMarkingChange('Значок назначен ячейке');
+        return;
+      }
+    }
+    renderTape();
+  }
+
+  function applyTapeIcon(iconKey) {
+    if (!MARKING_ICONS[iconKey] || iconKey === 'none') return;
+    tapePendingIcon = iconKey;
+    updateTapeToolsState();
+    if (!selectedTapeMarkingId) {
+      showToast('Выберите ячейку на ленте — значок будет применён', 'success', 2000);
+      return;
+    }
+    const marking = markings().find((item) => item.id === selectedTapeMarkingId);
+    if (!marking) return;
+    marking.icon = iconKey;
+    tapePendingIcon = null;
+    commitMarkingChange('Иконка обновлена');
+  }
+
+  function applyTapeColor(value) {
+    const color = String(value || '').toLowerCase();
+    if (!HEX_COLOR_RE.test(color)) return;
+    const marking = markings().find((item) => item.id === selectedTapeMarkingId);
+    if (!marking) return;
+    marking.color = color;
+    commitMarkingChange('Цвет полосы обновлён');
+  }
+
+  function setTapeMerge(enabled) {
+    const marking = markings().find((item) => item.id === selectedTapeMarkingId);
+    if (!marking || marking.kind !== 'module') return;
+    if (!enabled) {
+      const groupId = marking.groupId;
+      if (groupId) {
+        markings().forEach((item) => {
+          if (item.groupId === groupId) item.groupId = '';
+        });
+      }
+      commitMarkingChange('Объединение снято');
+      return;
+    }
+    // Соседей ищем только внутри рейки этой наклейки: объединять ряды нельзя.
+    const row = tapeLayout().rows.find((item) =>
+      item.items.some((cell) => cell.type === 'module' &&
+        cell.members.some((member) => member.id === marking.id)));
+    const list = row ? row.items.filter((cell) => cell.type === 'module').map((cell) => cell.marking) : [];
+    const index = list.findIndex((item) => item.id === marking.id);
+    if (index < 0) return;
+    const members = [marking];
+    const left = list[index - 1];
+    const right = list[index + 1];
+    if (left && !left.groupId && !left.isCopy) members.unshift(left);
+    if (right && !right.groupId && !right.isCopy) members.push(right);
+    if (members.length < 2) {
+      showToast('Нет свободных соседних ячеек для объединения', 'error', 2500);
+      if (dom.tapeMergeCheck) dom.tapeMergeCheck.checked = false;
+      return;
+    }
+    const groupId = makeId('grp');
+    members.forEach((item) => { item.groupId = groupId; });
+    commitMarkingChange(`Объединено ячеек: ${members.length}`);
+  }
+
+  function resetTapeCell() {
+    const marking = markings().find((item) => item.id === selectedTapeMarkingId);
+    if (!marking) return;
+    const module = moduleById(marking.refId);
+    if (module) module.description = '';
+    marking.icon = 'none';
+    marking.color = DEFAULT_TAPE_COLOR;
+    if (marking.groupId) {
+      const groupId = marking.groupId;
+      markings().forEach((item) => {
+        if (item.groupId === groupId) item.groupId = '';
+      });
+    }
+    commitMarkingChange('Оформление ячейки сброшено', true);
+  }
+
+  function setMarkingMode(mode) {
+    markingMode = mode === 'sheet' ? 'sheet' : 'tape';
+    if (dom.markingView) dom.markingView.dataset.mode = markingMode;
+    document.querySelectorAll('[data-marking-mode]').forEach((button) => {
+      const active = button.dataset.markingMode === markingMode;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+    if (dom.markingSheetFold) {
+      if (markingMode === 'sheet') dom.markingSheetFold.open = true;
+      else dom.markingSheetFold.open = false;
+    }
+    if (dom.markingPrint) {
+      dom.markingPrint.title = markingMode === 'tape'
+        ? 'Печать ленты: только наклейки на белом фоне, масштаб 1:1'
+        : 'Печать листа наклеек: A4 альбомный, поля 0, масштаб 1:1';
+    }
+    // Размер и поля страницы на листе 1:1 не настраиваются — они жёстко
+    // заданы для сохранения масштаба. Остальные переключатели доступны.
+    const sheetMode = markingMode === 'sheet';
+    [dom.markingSize, dom.markingOrientation, dom.markingMarginTop,
+      dom.markingMarginRight, dom.markingMarginBottom, dom.markingMarginLeft]
+      .forEach((input) => { if (input) input.disabled = sheetMode; });
+    syncMarkingSettingsUI();
+    if (markingMode === 'tape') renderTape();
+  }
+
+  function renderTapePrintSheet() {
+    if (!dom.markingTapePrint) return;
+    const tape = buildTapeMarkup(true);
+    // Легенда и контрольный размер идут сразу под лентой наклеек.
+    const settings = markingSettings();
+    const legendEntries = settings.printLegend ? markingLegendEntries() : [];
+    dom.markingTapePrint.innerHTML =
+      `<div class="marking-tape" style="width:${tape.width}mm">${tape.html}</div>` +
+      markingLegendHtml(legendEntries) +
+      markingScaleMarkerHtml();
+  }
+
+  function applyTapePageStyle() {
+    if (!dom.markingPageStyle) return;
+    const settings = markingSettings();
+    dom.markingPageStyle.textContent =
+      `@page { size: ${settings.sheet} ${settings.orientation}; ` +
+      `margin: ${settings.marginTop}mm ${settings.marginRight}mm ` +
+      `${settings.marginBottom}mm ${settings.marginLeft}mm; }`;
+  }
+
+  function printTape() {
+    printContext = 'marking';
+    document.body.classList.add('print-tape');
+    document.body.classList.remove('print-marking');
+    renderTapePrintSheet();
+    applyTapePageStyle();
+    window.print();
+  }
+
+  function printActiveMarking() {
+    if (markingMode === 'sheet') printMarking();
+    else printTape();
+  }
+
+  // Скачивание ленты как SVG: единицы миллиметров, без растеризации —
+  // размеры наклеек остаются 1:1 при любом последующем выводе.
+  function downloadTape() {
+    if (!project) return;
+    const tape = buildTapeMarkup(false);
+    const padding = 2;
+    const width = tape.width + padding * 2;
+    const rowHeight = TAPE_CELL_HEIGHT_MM + TAPE_RAIL_HEADING_MM;
+    const rows = tape.layout.rows;
+    const height = padding * 2 + rows.length * rowHeight +
+      Math.max(0, rows.length - 1) * TAPE_RAIL_GAP_MM;
+    let body = `<rect x="0" y="0" width="${width}" height="${height}" fill="#fff"/>`;
+    rows.forEach((row, rowIndex) => {
+      const top = padding + rowIndex * (rowHeight + TAPE_RAIL_GAP_MM);
+      const y = top + TAPE_RAIL_HEADING_MM;
+      body += `<text x="${padding}" y="${top + 5}" font-family="Arial" font-size="3" font-weight="700" fill="#0f172a">` +
+        `${escapeHtml(row.label)}</text>`;
+      row.items.forEach((item) => {
+        if (item.type === 'spacer') return; // пустые слоты остаются чистым полем
+        const offsetX = padding + item.left;
+        item.members.forEach((marking, memberIndex) => {
+          const module = moduleById(marking.refId);
+          const w = tapeWidthFor(marking);
+          const x = offsetX + item.members.slice(0, memberIndex)
+            .reduce((sum, member) => sum + tapeWidthFor(member), 0);
+        const title = tapeTitleFor(marking);
+        const tag = String(moduleById(marking.refId)?.tag || '').trim() || '—';
+        const description = tapeDescriptionFor(marking);
+        const color = HEX_COLOR_RE.test(String(marking.color || ''))
+          ? marking.color.toLowerCase() : DEFAULT_TAPE_COLOR;
+        const breaker = MARKING_ICONS.breaker.svg;
+        const dest = MARKING_ICONS[marking.icon]?.svg || '';
+        const tagW = Math.max(5, Math.min(w - 2.4, 3 + tag.length * 1.7));
+        const tagX = x + (w - tagW) / 2;
+        const descChars = Math.max(4, Math.floor((w - 2) / 1.25));
+        const descText = description.length > descChars
+          ? `${description.slice(0, descChars - 1)}…` : description;
+        const wide = module ? Math.max(1, Math.round(Number(module.width) || 1)) > 1 : false;
+        const headX = wide ? x + w / 2 : x + 0.8;
+        const headAnchor = wide ? 'middle' : 'start';
+        body += `<g>
+          <rect x="${x}" y="${y}" width="${w}" height="${TAPE_CELL_HEIGHT_MM}" fill="#f8fafc" stroke="#64748b" stroke-width="0.25"/>
+          <path d="M${x} ${y + 13} H${x + w} M${x} ${y + 22} H${x + w} M${x} ${y + 32} H${x + w}"
+                stroke="#cbd5e1" stroke-width="0.2" fill="none"/>
+          <text x="${headX}" y="${y + 3.2}" text-anchor="${headAnchor}" font-family="Arial" font-size="1.9" font-weight="700" fill="#334155">${escapeHtml(title.brand)}</text>
+          <text x="${headX}" y="${y + 6.2}" text-anchor="${headAnchor}" font-family="Arial" font-size="2.4" font-weight="700" fill="#0f172a">${escapeHtml(title.model)}</text>
+          <text x="${headX}" y="${y + 9.2}" text-anchor="${headAnchor}" font-family="Arial" font-size="1.8" fill="#64748b">${escapeHtml(title.meta)}</text>
+          <g transform="translate(${x + w / 2 - 3}, ${y + 14}) scale(0.25)" stroke="#1e293b" stroke-width="1.6"
+             fill="none" stroke-linecap="round" stroke-linejoin="round">${breaker}</g>
+          <rect x="${tagX}" y="${y + 23.2}" width="${tagW}" height="6.4" rx="0.6"
+                fill="#fde047" stroke="#a16207" stroke-width="0.25"/>
+          <text x="${x + w / 2 - 1.5}" y="${y + 27.6}" text-anchor="middle" font-family="Arial"
+                font-size="3" font-weight="700" fill="#422006">${escapeHtml(tag)}</text>
+          <rect x="${x + w - 2.4}" y="${y + 23.2}" width="1.8" height="6.4" rx="0.4"
+                fill="${escapeHtml(color)}" stroke="#0f172a" stroke-opacity="0.35" stroke-width="0.2"/>
+          ${dest ? `<g transform="translate(${x + w / 2 - 1.2}, ${y + 33.2}) scale(0.1)" stroke="#1e293b"
+             stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round">${dest}</g>` : ''}
+          <text x="${x + w / 2}" y="${y + 40.5}" text-anchor="middle" font-family="Arial"
+                font-size="2.1" font-weight="700" fill="#1e293b">${escapeHtml(descText)}</text>
+        </g>`;
+      });
+      if (item.members.length > 1) {
+        body += `<rect x="${offsetX}" y="${y + 32.8}" width="${item.width}" height="11.2" rx="0.8"
+          fill="#fff" stroke="#000" stroke-width="0.25" stroke-dasharray="1 0.6"/>
+          <text x="${offsetX + item.width / 2}" y="${y + 39.6}" text-anchor="middle"
+          font-family="Arial" font-size="2.7" font-weight="700" fill="#000">${escapeHtml(item.groupText || 'Общая подпись')}</text>`;
+      }
+      });
+    });
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}mm" height="${height}mm" ` +
+      `viewBox="0 0 ${width} ${height}">${body}</svg>`;
+    const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+    downloadBlob(blob, `marking-tape-${safeFileName(project.name)}-${fileDate()}.svg`);
+    showToast('Лента скачана в SVG (масштаб 1:1)', 'success', 2600);
+  }
+
+  function printMarking() {
+    printContext = 'marking';
+    // Класс выставляем сразу: не все браузеры последовательно генерируют
+    // beforeprint для программного вызова window.print().
+    document.body.classList.add('print-marking');
+    document.body.classList.remove('print-tape');
+    renderMarking();
+    updateMarkingPageStyle('marking');
     window.print();
   }
 
@@ -7703,7 +10102,8 @@
       dom.wireLayer,
       dom.moduleLayer,
       dom.powerSourceLayer,
-      dom.labelLayer
+      dom.labelLayer,
+      dom.notesLayer
     ];
     // Служебные элементы интерфейса в картинку не попадают и в габарите не участвуют.
     const uiSelector = [
@@ -7716,7 +10116,8 @@
       '.module-focus-ring',
       '.module-pending-badge',
       '.rail-overflow-outline',
-      '.rail-slot-highlight'
+      '.rail-slot-highlight',
+      '.note-delete'
     ].join(', ');
 
     for (const layer of layers) {
@@ -7747,12 +10148,13 @@
 
   function stabilizeCanvasForExport() {
     if (!dragState && !gesture && !activePort && !pendingWire &&
-        !selectedConnectionId && selectedModuleIds.size === 0) return;
+        !selectedConnectionId && selectedModuleIds.size === 0 && !selectedNoteId) return;
 
     resetInteractionState();
     clearConnectionDraft();
     clearSelection();
     selectedConnectionId = null;
+    selectedNoteId = null;
     renderCanvas();
     updateConnectionUI();
   }
@@ -7786,7 +10188,8 @@
       '.module-focus-ring',
       '.module-pending-badge',
       '.rail-overflow-outline',
-      '.rail-slot-highlight'
+      '.rail-slot-highlight',
+      '.note-delete'
     ].join(', ')).forEach((element) => element.remove());
 
     return new XMLSerializer().serializeToString(clone);
@@ -8008,6 +10411,7 @@
     // Подпись провода открывается двойным кликом именно по хало:
     // видимый .wire-path имеет pointer-events: none и событие не ловит.
     dom.wireLayer.addEventListener('dblclick', onWireDblClick);
+    if (dom.notesLayer) dom.notesLayer.addEventListener('dblclick', onNoteDblClick);
     dom.canvas.addEventListener('dblclick', onCanvasDblClick);
     dom.canvas.addEventListener('keydown', onCanvasKeyDown);
     if (dom.inlineEditor) {
@@ -8101,6 +10505,9 @@
       dom.paramsToggle.addEventListener('change', onParamsToggleChange);
     }
     if (dom.addRail) dom.addRail.addEventListener('click', addRail);
+    if (dom.addNoteBtn) {
+      dom.addNoteBtn.addEventListener('click', () => setNotePlacing(!notePlacing));
+    }
     dom.undoBtn.addEventListener('click', undo);
     dom.redoBtn.addEventListener('click', redo);
     if (dom.groupBtn) dom.groupBtn.addEventListener('click', groupSelectedModules);
@@ -8151,6 +10558,204 @@
       });
     }
 
+    // Маркировка из шапки — отдельная вкладка, как кабельный журнал.
+    if (dom.openMarking) {
+      dom.openMarking.addEventListener('click', () => {
+        switchViewTab('marking');
+        dom.markingView?.scrollIntoView({ block: 'start' });
+      });
+    }
+    if (dom.markingAutonumber) dom.markingAutonumber.addEventListener('click', autoNumberMarkings);
+    if (dom.markingExportJson) dom.markingExportJson.addEventListener('click', exportMarkingJson);
+    // «Печать» печатает активный режим: ленту или лист наклеек.
+    if (dom.markingPrint) dom.markingPrint.addEventListener('click', printActiveMarking);
+    if (dom.markingPdf) dom.markingPdf.addEventListener('click', printActiveMarking);
+    if (dom.markingDownload) dom.markingDownload.addEventListener('click', downloadTape);
+    if (dom.markingReset) dom.markingReset.addEventListener('click', resetMarkings);
+
+    // Переключатель режимов редактора маркировки.
+    document.querySelectorAll('[data-marking-mode]').forEach((button) => {
+      button.addEventListener('click', () => setMarkingMode(button.dataset.markingMode));
+    });
+
+    // Библиотека значков: клик по иконке, затем по ячейке на ленте.
+    if (dom.markingToolsList) {
+      dom.markingToolsList.addEventListener('click', (event) => {
+        const button = event.target.closest?.('[data-tape-icon]');
+        if (button && dom.markingToolsList.contains(button)) applyTapeIcon(button.dataset.tapeIcon);
+      });
+    }
+    if (dom.markingToolClear) {
+      dom.markingToolClear.addEventListener('click', () => {
+        tapePendingIcon = null;
+        updateTapeToolsState();
+        const marking = markings().find((item) => item.id === selectedTapeMarkingId);
+        if (!marking) {
+          showToast('Ячейка не выбрана', 'error', 1800);
+          return;
+        }
+        marking.icon = 'none';
+        commitMarkingChange('Значок снят');
+      });
+    }
+
+    // Лента: выбор ячейки и применение отложенного значка.
+    if (dom.markingTape) {
+      dom.markingTape.addEventListener('click', (event) => {
+        const cell = event.target.closest?.('[data-marking-id]');
+        if (!cell || !dom.markingTape.contains(cell)) return;
+        selectTapeMarking(cell.dataset.markingId);
+      });
+    }
+
+    // Свойства: тег и описание меняются мгновенно, в историю пишутся по blur.
+    let tapeTextDraft = null;
+    const bindTapeText = (input, field) => {
+      if (!input) return;
+      input.addEventListener('input', () => {
+        if (!selectedTapeMarkingId) return;
+        const marking = markings().find((item) => item.id === selectedTapeMarkingId);
+        const module = marking?.kind === 'module' ? moduleById(marking.refId) : null;
+        if (!module) return;
+        module[field] = field === 'tag'
+          ? String(input.value || '').trim().slice(0, 12).toUpperCase()
+          : String(input.value || '').slice(0, MAX_MODULE_DESCRIPTION_LENGTH);
+        tapeTextDraft = { markingId: selectedTapeMarkingId, field };
+        renderTape();
+      });
+      input.addEventListener('change', () => {
+        if (tapeTextDraft && tapeTextDraft.markingId) {
+          tapeTextDraft = null;
+          commitMarkingChange(field === 'tag' ? 'Тег обновлён' : 'Описание обновлено');
+        }
+      });
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          input.blur();
+        }
+      });
+    };
+    bindTapeText(dom.tapeTagInput, 'tag');
+    bindTapeText(dom.tapeDescInput, 'description');
+
+    if (dom.tapeIconPicker) {
+      dom.tapeIconPicker.addEventListener('click', (event) => {
+        const button = event.target.closest?.('[data-icon]');
+        if (button) applyTapeIcon(button.dataset.icon);
+      });
+    }
+    if (dom.tapeColorSwatches) {
+      dom.tapeColorSwatches.addEventListener('click', (event) => {
+        const button = event.target.closest?.('[data-color]');
+        if (button) applyTapeColor(button.dataset.color);
+      });
+    }
+    if (dom.tapeColorCustom) {
+      dom.tapeColorCustom.addEventListener('change', () => applyTapeColor(dom.tapeColorCustom.value));
+    }
+    if (dom.tapeMergeCheck) {
+      dom.tapeMergeCheck.addEventListener('change', () => setTapeMerge(dom.tapeMergeCheck.checked));
+    }
+    if (dom.tapeResetCell) dom.tapeResetCell.addEventListener('click', resetTapeCell);
+
+    // Настройки листа: каждое изменение сохраняется в проект и попадает
+    // в историю Undo/Redo.
+    [dom.markingSize, dom.markingOrientation, dom.markingMarginTop,
+      dom.markingMarginRight, dom.markingMarginBottom, dom.markingMarginLeft,
+      dom.markingRulerToggle, dom.markingPrintLegend].forEach((input) => {
+      if (input) input.addEventListener('change', onMarkingSettingChange);
+    });
+
+    // Наклейка в предпросмотре открывает встроенный редактор рядом с ней.
+    if (dom.markingSheetArea) {
+      dom.markingSheetArea.addEventListener('click', (event) => {
+        const sticker = event.target.closest?.('[data-marking-id]');
+        if (!sticker || !dom.markingSheetArea.contains(sticker)) return;
+        openMarkingEditor(sticker.dataset.markingId, sticker);
+      });
+    }
+
+    // Клик по модулю на схеме тоже открывает редактор его наклейки.
+    let modulePointerDown = null;
+    if (dom.moduleLayer) {
+      dom.moduleLayer.addEventListener('pointerdown', (event) => {
+        modulePointerDown = { x: event.clientX, y: event.clientY };
+      });
+      dom.moduleLayer.addEventListener('click', (event) => {
+        if (activeTab !== 'schema' || !modulePointerDown) return;
+        const moved = Math.hypot(event.clientX - modulePointerDown.x,
+          event.clientY - modulePointerDown.y);
+        modulePointerDown = null;
+        if (moved > 6 || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+        if (event.target.closest?.('[data-port-id], [data-toggle-module], [data-delete-module]')) return;
+        const group = event.target.closest?.('[data-module-id]');
+        if (!group) return;
+        const module = moduleById(group.getAttribute('data-module-id'));
+        if (!module) return;
+        syncMarkings();
+        persistProject();
+        const marking = markings().find((item) =>
+          item.kind === 'module' && item.refId === module.id);
+        if (marking) openMarkingEditor(marking.id, group);
+      });
+    }
+
+    // Встроенный редактор наклейки.
+    if (dom.markingEditor) {
+      dom.markingEditor.addEventListener('pointerdown', (event) => event.stopPropagation());
+      dom.markingEditor.addEventListener('click', (event) => event.stopPropagation());
+    }
+    if (dom.markingEditorClose) dom.markingEditorClose.addEventListener('click', closeMarkingEditor);
+    if (dom.markingMainInput) {
+      dom.markingMainInput.addEventListener('change', () => updateMarkingFromEditor());
+      dom.markingMainInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          updateMarkingFromEditor();
+        }
+      });
+    }
+    if (dom.markingTextMode) {
+      dom.markingTextMode.addEventListener('change', () => {
+        const marking = markings().find((item) => item.id === selectedMarkingId);
+        if (!marking) return;
+        marking.textMode = dom.markingTextMode.value;
+        commitMarkingChange('Источник текста изменён', true);
+        fillMarkingEditor(marking);
+      });
+    }
+    if (dom.markingTextOrientation) {
+      dom.markingTextOrientation.addEventListener('change', () => updateMarkingFromEditor());
+    }
+    if (dom.markingWidthMm) {
+      dom.markingWidthMm.addEventListener('change', () => updateMarkingFromEditor());
+    }
+    if (dom.markingPreset) {
+      dom.markingPreset.addEventListener('change', () => {
+        if (!dom.markingWidthMm) return;
+        dom.markingWidthMm.value = dom.markingPreset.value;
+        updateMarkingFromEditor();
+      });
+    }
+    if (dom.markingIconPicker) {
+      dom.markingIconPicker.innerHTML = markingIconPickerHtml();
+      dom.markingIconPicker.addEventListener('click', (event) => {
+        const button = event.target.closest?.('[data-icon]');
+        if (!button) return;
+        const marking = markings().find((item) => item.id === selectedMarkingId);
+        if (!marking) return;
+        marking.icon = button.dataset.icon;
+        commitMarkingChange('Пиктограмма обновлена');
+        fillMarkingEditor(marking);
+      });
+    }
+    if (dom.markingClone) dom.markingClone.addEventListener('click', () => cloneMarking());
+    if (dom.markingGroup) dom.markingGroup.addEventListener('click', () => toggleMarkingGroup());
+    if (dom.markingDelete) dom.markingDelete.addEventListener('click', () => deleteMarking());
+    window.addEventListener('scroll', () => positionMarkingEditor(), true);
+    window.addEventListener('resize', () => positionMarkingEditor());
+
     // Смета проекта.
     if (dom.openEstimate) dom.openEstimate.addEventListener('click', openEstimate);
     if (dom.estimateDialog) {
@@ -8195,9 +10800,11 @@
       dom.viewTabs.addEventListener('keydown', (event) => {
         if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
         event.preventDefault();
-        const next = activeTab === 'journal' ? 'schema' : 'journal';
+        const order = ['schema', 'journal', 'marking'];
+        const step = event.key === 'ArrowRight' ? 1 : -1;
+        const next = order[(order.indexOf(activeTab) + step + order.length) % order.length];
         switchViewTab(next);
-        (next === 'journal' ? dom.tabJournal : dom.tabSchema)?.focus();
+        ({ schema: dom.tabSchema, journal: dom.tabJournal, marking: dom.tabMarking })[next]?.focus();
       });
     }
 
@@ -8232,16 +10839,32 @@
       });
     }
 
-    // Ctrl+P печатает актуальную таблицу даже без открытой вкладки.
+    // Ctrl+P печатает актуальный лист даже без открытой вкладки. На вкладке
+    // маркировки выводится лист наклеек, иначе — журнал или смета.
     window.addEventListener('beforeprint', () => {
       if (!project) return;
-      document.body.classList.toggle('print-estimate', printContext === 'estimate');
-      if (printContext === 'estimate') renderEstimate();
-      else renderJournal();
+      const useTape = activeTab === 'marking' && markingMode === 'tape';
+      const context = activeTab === 'marking' ? 'marking' : printContext;
+      document.body.classList.toggle('print-tape', useTape);
+      document.body.classList.toggle('print-marking', context === 'marking' && !useTape);
+      document.body.classList.toggle('print-estimate', context === 'estimate');
+      if (useTape) {
+        renderTapePrintSheet();
+        applyTapePageStyle();
+      } else {
+        if (context === 'marking') renderMarking();
+        else if (context === 'estimate') renderEstimate();
+        else renderJournal();
+        updateMarkingPageStyle(context === 'marking' ? 'marking' : null);
+      }
     });
     window.addEventListener('afterprint', () => {
       document.body.classList.remove('print-estimate');
+      document.body.classList.remove('print-marking');
+      document.body.classList.remove('print-tape');
       printContext = 'journal';
+      dom.markingPageStyle.textContent = '';
+      if (activeTab === 'marking') renderMarking();
     });
   }
 
@@ -8261,6 +10884,10 @@
     syncSimulationToggle();
     syncParamsToggle();
     renderAll();
+
+    // Редактор ленты: библиотека значков, палитра и режим по умолчанию.
+    renderTapeTools();
+    setMarkingMode('tape');
 
     // Баннер миграции показывается один раз: обновлённый проект уже записан в localStorage.
     const migrationText = dom.migrationBanner.querySelector('[data-migration-text]');

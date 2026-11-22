@@ -8,6 +8,9 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232563eb'/%3E%3Cpath d='M20 17v30M44 17v30M20 32h24' stroke='white' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
   <title>Щит.Студия — конфигуратор электрического щита</title>
   <link rel="stylesheet" href="./style.css">
+  <!-- Динамические параметры печати (@page) для вкладки «Маркировка»:
+       размер, ориентация и отступы задаются пользователем на экране. -->
+  <style id="marking-page-style"></style>
   <!-- База элементов подключается ПЕРЕД основной логикой: script.js читает
        window.ELECTRIC_LIBRARY из library.js при отрисовке библиотеки. -->
   <script src="./library.js" defer></script>
@@ -115,6 +118,21 @@
               </svg>
             </button>
 
+            <!-- Текстовые заметки: кнопка включает режим, следующий клик по
+                 холсту ставит ОДИН стикер и сразу выключает режим. Отмена:
+                 Esc, повторный клик по кнопке или клик вне холста. -->
+            <button class="btn btn-secondary add-note-btn" id="add-note" type="button"
+                    aria-pressed="false"
+                    title="Добавить текстовую заметку на холст (Esc — отмена режима)">
+              <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path d="M4.25 3.25h8L15.75 6.75v10a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1v-13a1 1 0 0 1 1-1Z"
+                      stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                <path d="M12 3.5v3.5h3.5M6.75 10.5h6.5M6.75 13.5h4.5"
+                      stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span>Добавить заметку</span>
+            </button>
+
             <!-- Склейка модулей: выделенные рамкой / Shift+кликом модули
                  получают общий groupId и перетаскиваются как одно целое.
                  Доступно также горячими клавишами Ctrl+G / Ctrl+Shift+G. -->
@@ -149,6 +167,15 @@
                 <path d="M3.25 7.6h13.5M8 7.6v9.15M12.6 7.6v9.15" stroke="currentColor" stroke-width="1.4"/>
               </svg>
               <span>Кабельный журнал</span>
+            </button>
+            <button class="btn btn-marking" id="open-marking" type="button"
+                    title="Открыть маркировку: лист наклеек в масштабе 1:1">
+              <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path d="M7.5 2.75h5a1 1 0 0 1 1 1v1.5h1.75a1 1 0 0 1 1 1v9.5a1 1 0 0 1-1 1h-9.5a1 1 0 0 1-1-1v-9.5a1 1 0 0 1 1-1H6.5v-1.5a1 1 0 0 1 1-1Z"
+                      stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                <path d="M8.75 8.5h2.5M8.75 11.5h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              </svg>
+              <span>Маркировка</span>
             </button>
             <button class="btn btn-estimate" id="open-estimate" type="button"
                     title="Открыть смету проекта (Bill of Materials)">
@@ -261,6 +288,9 @@
           <button class="view-tab" id="tab-journal" type="button" role="tab"
                   aria-selected="false" aria-controls="journal-view" tabindex="-1"
                   data-view-tab="journal">Кабельный журнал</button>
+          <button class="view-tab" id="tab-marking" type="button" role="tab"
+                  aria-selected="false" aria-controls="marking-view" tabindex="-1"
+                  data-view-tab="marking">Маркировка</button>
         </div>
 
         <div class="view-pane" id="schema-view" role="tabpanel" aria-labelledby="tab-schema">
@@ -286,7 +316,7 @@
           <div class="canvas-toolbar">
             <div class="canvas-toolbar-left">
               <span class="live-chip"><span class="live-dot" aria-hidden="true"></span>Схема</span>
-              <span class="drag-tip">Перетаскивание — слоты (с зазорами) · тяга по фону — рамка выделения · Shift+клик — добавить/убрать из выделения · Ctrl+G / Ctrl+Shift+G — склеить / разъединить · Delete — удалить выделенное · клик по порту — провод · двойной клик — подпись (по нагрузке — мощность) · колесико — зум, Пробел / средняя кнопка + тяга — панорама</span>
+              <span class="drag-tip">Перетаскивание — слоты (с зазорами) · тяга по фону — рамка выделения · Shift+клик — добавить/убрать из выделения · Ctrl+G / Ctrl+Shift+G — склеить / разъединить · Delete — удалить выделенное · клик по порту — провод · двойной клик — подпись (по нагрузке — мощность) · заметка: кнопка «Добавить заметку», клик по холсту, двойной клик — текст, тяга — перемещение · колесико — зум, Пробел / средняя кнопка + тяга — панорама</span>
             </div>
             <div class="view-controls" role="group" aria-label="Масштаб и вид холста">
               <button class="view-btn" id="zoom-out" type="button"
@@ -433,6 +463,9 @@
               <g id="layer-modules" class="layer"></g>
               <g id="layer-power-source"></g>
               <g id="layer-labels" class="layer"></g>
+              <!-- Стикеры лежат поверх всех слоёв. Группа не переключается
+                   панелью «Слои» и очищается/перерисовывается в script.js. -->
+              <g id="layer-notes"></g>
 
               <!-- Рамка группового выделения. Лежит поверх всех слоёв и не
                    перехватывает указатель: координаты задаются в системе
@@ -678,6 +711,236 @@
             </div>
           </section>
         </div>
+
+        <!-- Маркировка: печатный лист наклеек, масштаб 1:1 (1P = 18 мм).
+             Размеры наклеек и листа задаются в миллиметрах, поэтому
+             предпросмотр совпадает с распечаткой без дополнительного зуома. -->
+        <div class="view-pane marking-view" id="marking-view" role="tabpanel"
+             aria-labelledby="tab-marking" hidden>
+          <header class="marking-head">
+            <div>
+              <span class="eyebrow"><span class="eyebrow-index">02</span>Маркировка</span>
+              <h1 id="marking-title">Редактор маркировки</h1>
+              <p class="marking-subtitle" id="marking-subtitle"></p>
+            </div>
+            <div class="marking-actions">
+              <!-- Печатная легенда знаков. По умолчанию выключена; состояние
+                   сохраняется вместе с настройками листа маркировки. -->
+              <label class="sim-toggle marking-legend-toggle" for="marking-print-legend"
+                     title="Добавить на печатный лист список использованных иконок">
+                <input class="sim-toggle-input" id="marking-print-legend" type="checkbox"
+                       aria-label="Печатать легенду">
+                <span class="sim-toggle-track" aria-hidden="true">
+                  <span class="sim-toggle-thumb"></span>
+                </span>
+                <span class="sim-toggle-copy" aria-hidden="true">
+                  <span class="sim-toggle-title">Печатать легенду</span>
+                  <span class="sim-toggle-state" id="marking-print-legend-state">Выкл</span>
+                </span>
+              </label>
+              <div class="marking-mode-switch" role="group" aria-label="Режим маркировки">
+                <button class="marking-mode-btn is-active" type="button" data-marking-mode="tape"
+                        aria-pressed="true" title="Редактор ленты на DIN-рейке">Лента</button>
+                <button class="marking-mode-btn" type="button" data-marking-mode="sheet"
+                        aria-pressed="false" title="Печатный лист наклеек 1:1">Лист 1:1</button>
+              </div>
+              <button class="btn btn-secondary" id="marking-autonumber" type="button"
+                      title="Присвоить теги QF1, QF2… по порядку слева направо">
+                <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path d="M3.25 5.25h5.5v9.5h-5.5zM8.75 8.25h8v6.5h-8z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+                  <path d="M5.2 7.6v.1M5.2 10v.1M11 10.8h3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+                <span>Автонумерация</span>
+              </button>
+              <button class="btn btn-secondary" id="marking-export-json" type="button"
+                      title="Сохранить наклейки и настройки листа в JSON-архив">
+                <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path d="M10 2.75v9.5m0 0 3.4-3.4M10 12.25l-3.4-3.4M3.5 14.75v1.75a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-1.75"
+                        stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>JSON</span>
+              </button>
+              <button class="btn btn-secondary" id="marking-download" type="button"
+                      title="Скачать ленту в SVG в масштабе 1:1 (все размеры в мм)">
+                <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path d="M10 2.75v9.5m0 0 3.4-3.4M10 12.25l-3.4-3.4M3.5 14.75v1.75a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-1.75"
+                        stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>Скачать</span>
+              </button>
+              <button class="btn btn-secondary" id="marking-print" type="button"
+                      title="Печать ленты: только наклейки на белом фоне, масштаб 1:1">
+                <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path d="M6 7V3.5h8V7M6 14.5H4.5A1.5 1.5 0 0 1 3 13V9a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v4a1.5 1.5 0 0 1-1.5 1.5H14"
+                        stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M6 12h8v4.5H6z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                  <circle cx="14.7" cy="9.8" r="0.7" fill="currentColor"/>
+                </svg>
+                <span>Печать</span>
+              </button>
+              <button class="btn btn-estimate" id="marking-pdf" type="button"
+                      title="Скачать PDF через диалог печати браузера">
+                <svg class="btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path d="M5.5 3.25h6L14.5 6v10.75a1 1 0 0 1-1 1h-8a1 1 0 0 1-1-1v-13a1 1 0 0 1 1-1Z"
+                        stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                  <path d="M11 3.5V6h3.2M7.5 10.5h5M7.5 13.5h3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                </svg>
+                <span>PDF</span>
+              </button>
+            </div>
+          </header>
+
+          <!-- Напоминание о масштабе показывается только на вкладке «Лист 1:1».
+               Браузер не может выставить настройки принтера самостоятельно,
+               поэтому требование 100% и нулевых полей выведено отдельной плашкой. -->
+          <div class="marking-print-warning" role="note">
+            <svg class="marking-print-warning-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="M10 2.8 18 17H2L10 2.8Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              <path d="M10 8v4M10 14.2v.1" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            </svg>
+            <span><strong>ВАЖНО:</strong> При печати в настройках принтера выберите масштаб 100% (Не «По размеру страницы») и отключите поля, чтобы сохранить масштаб 1:1.</span>
+          </div>
+
+          <!-- Редактор ленты: библиотека значков слева, DIN-рейка по центру,
+               свойства выбранной ячейки справа. -->
+          <div class="marking-studio" id="marking-studio">
+            <aside class="marking-tools-panel" aria-labelledby="marking-tools-title">
+              <div class="marking-panel-head">
+                <span class="eyebrow"><span class="eyebrow-index">01</span>Библиотека</span>
+                <h2 id="marking-tools-title">Значки</h2>
+                <p>Кликните значок, затем ячейку на ленте — или сначала выберите ячейку.</p>
+              </div>
+              <div class="marking-tools-list" id="marking-tools-list" role="group" aria-label="Значки назначения"></div>
+              <div class="marking-tools-foot">
+                <span class="marking-tool-hint" id="marking-tool-hint">Выберите значок</span>
+                <button class="btn btn-secondary marking-tool-clear" id="marking-tool-clear" type="button"
+                        title="Снять выбранный значок с активной ячейки">Снять</button>
+              </div>
+            </aside>
+
+            <section class="marking-tape-stage" aria-labelledby="marking-tape-title">
+              <div class="marking-tape-toolbar">
+                <div>
+                  <span class="eyebrow"><span class="eyebrow-index">02</span>Лента</span>
+                  <h2 id="marking-tape-title">DIN-рейки · наклейки 1:1</h2>
+                </div>
+                <span class="marking-tape-scale">1 модуль = 18 мм</span>
+              </div>
+              <div class="marking-tape-viewport" id="marking-tape-viewport">
+                <!-- Каждая рейка из проекта отрисовывается отдельным рядом:
+                     заголовок "Рейка N" + полоса наклеек с заглушками пустых слотов. -->
+                <div class="marking-tape" id="marking-tape"></div>
+              </div>
+              <p class="marking-tape-hint" id="marking-tape-hint">
+                Каждая DIN-рейка — отдельный ряд. Пропущенные слоты показаны заглушками по 18 мм.
+                Кликните по наклейке, чтобы изменить тег, описание, значок и цвет полосы справа.
+              </p>
+            </section>
+
+            <aside class="marking-props-panel" aria-labelledby="marking-props-title">
+              <div class="marking-panel-head">
+                <span class="eyebrow"><span class="eyebrow-index">03</span>Свойства</span>
+                <h2 id="marking-props-title">Ячейка</h2>
+                <p id="marking-props-target">Элемент не выбран</p>
+              </div>
+              <div class="marking-props-empty" id="marking-props-empty">
+                <span aria-hidden="true">◧</span>
+                <strong>Выберите модуль на ленте</strong>
+                <span>Слева — библиотека значков, по центру — редактируемая лента.</span>
+              </div>
+              <div class="marking-props-body" id="marking-props-body" hidden>
+                <label class="marking-field">
+                  <span>Текст тега</span>
+                  <input id="tape-tag-input" class="marking-input" type="text" maxlength="12"
+                         autocomplete="off" spellcheck="false" placeholder="QF1">
+                </label>
+                <label class="marking-field">
+                  <span>Описание / назначение</span>
+                  <input id="tape-desc-input" class="marking-input" type="text" maxlength="80"
+                         autocomplete="off" spellcheck="false" placeholder="Например: Кухня">
+                </label>
+                <div class="marking-field">
+                  <span>Иконка назначения</span>
+                  <div class="marking-icon-picker" id="tape-icon-picker" role="group" aria-label="Иконка ячейки"></div>
+                </div>
+                <div class="marking-field">
+                  <span>Цвет полосы (фаза / линия)</span>
+                  <div class="tape-color-swatches" id="tape-color-swatches" role="group" aria-label="Цвет полосы"></div>
+                  <label class="tape-color-custom">
+                    <input id="tape-color-custom" type="color" value="#22c55e" aria-label="Свой цвет полосы">
+                    <span>Свой цвет</span>
+                  </label>
+                </div>
+                <label class="tape-merge-check">
+                  <input id="tape-merge-check" type="checkbox">
+                  <span>Объединить с соседними</span>
+                </label>
+                <div class="marking-editor-meta" id="tape-props-meta"></div>
+                <button class="btn btn-danger marking-props-reset" id="tape-reset-cell" type="button"
+                        title="Вернуть тег, описание, иконку и цвет к значениям по умолчанию">
+                  Сбросить ячейку
+                </button>
+              </div>
+            </aside>
+          </div>
+
+          <!-- Печатный лист наклеек из предыдущей версии остаётся доступным. -->
+          <details class="marking-sheet-fold" id="marking-sheet-fold">
+            <summary>Печатный лист наклеек 1:1 · дополнительные настройки</summary>
+            <section class="marking-settings" aria-label="Настройки листа маркировки">
+              <div class="marking-setting">
+                <label for="marking-sheet-size">Размер листа</label>
+                <select id="marking-sheet-size" class="marking-input">
+                  <option value="A4" selected>A4</option>
+                  <option value="A5">A5</option>
+                </select>
+              </div>
+              <div class="marking-setting">
+                <label for="marking-orientation">Ориентация</label>
+                <select id="marking-orientation" class="marking-input">
+                  <option value="portrait" selected>Портрет</option>
+                  <option value="landscape">Ландшафт</option>
+                </select>
+              </div>
+              <div class="marking-setting marking-margins">
+                <span class="marking-setting-label">Отступы, мм</span>
+                <div class="marking-margin-grid">
+                  <label><span>вверх</span><input id="marking-margin-top" class="marking-input" type="number" min="0" max="40" step="1" inputmode="numeric" aria-label="Верхний отступ, мм"></label>
+                  <label><span>вправо</span><input id="marking-margin-right" class="marking-input" type="number" min="0" max="40" step="1" inputmode="numeric" aria-label="Правый отступ, мм"></label>
+                  <label><span>вниз</span><input id="marking-margin-bottom" class="marking-input" type="number" min="0" max="40" step="1" inputmode="numeric" aria-label="Нижний отступ, мм"></label>
+                  <label><span>влево</span><input id="marking-margin-left" class="marking-input" type="number" min="0" max="40" step="1" inputmode="numeric" aria-label="Левый отступ, мм"></label>
+                </div>
+              </div>
+              <label class="sim-toggle marking-ruler-toggle" for="marking-ruler-toggle-input"
+                     title="Нанести на лист отрезок длиной ровно 100 мм для проверки масштаба">
+                <input class="sim-toggle-input" id="marking-ruler-toggle-input" type="checkbox" checked
+                       aria-label="Показывать контрольную линейку">
+                <span class="sim-toggle-track" aria-hidden="true"><span class="sim-toggle-thumb"></span></span>
+                <span class="sim-toggle-copy" aria-hidden="true">
+                  <span class="sim-toggle-title">Контрольная линейка</span>
+                  <span class="sim-toggle-state" id="marking-ruler-state">Вкл</span>
+                </span>
+              </label>
+              <button class="btn btn-secondary marking-reset" id="marking-reset" type="button"
+                      title="Удалить все правки наклеек и сгенерировать их заново из схемы">
+                Сбросить
+              </button>
+            </section>
+            <p class="marking-scale-note">
+              <strong>Масштаб 1:1.</strong> Лист 1:1 печатается на A4 альбомной ориентации
+              с нулевыми полями страницы (@page: A4 landscape, margin: 0). Все размеры
+              заданы в мм: 1 модуль DIN = 18 мм. В настройках принтера выберите 100%
+              (не «По размеру страницы») — линейка 100 мм должна получиться длиной ровно 100 мм.
+            </p>
+            <div class="marking-sheet-wrap" id="marking-sheet-wrap">
+              <div class="marking-sheet-area" id="marking-sheet-area"></div>
+            </div>
+            <p class="marking-hint">
+              Кликните по наклейке, чтобы открыть редактор рядом с ней. Ctrl+C / Ctrl+V —
+              копирование и вставка, Delete — удалить, Ctrl+Z / Ctrl+Y — отмена и повтор.
+            </p>
+          </details>
+        </div>
       </section>
     </main>
 
@@ -696,7 +959,7 @@
         </svg>
       </span>
       <h2 id="clear-dialog-title">Очистить проект?</h2>
-      <p>Все модули и связи будут удалены с холста. Название проекта сохранится. Действие можно отменить кнопкой «Назад».</p>
+      <p>Все модули, связи и заметки будут удалены с холста. Название проекта сохранится. Действие можно отменить кнопкой «Назад».</p>
       <div class="dialog-actions">
         <button class="btn btn-secondary" type="submit" value="cancel" autofocus>Отмена</button>
         <button class="btn btn-danger" type="submit" value="confirm">Очистить</button>
@@ -749,6 +1012,10 @@
   <!-- Печатный лист кабельного журнала: на экране скрыт, в @media print
        остаётся только он (кнопки, вкладки и SVG-холст не печатаются). -->
   <div class="journal-print-sheet" id="journal-print-sheet" aria-hidden="true"></div>
+  <!-- Печатный лист маркировки: те же наклейки в мм, что и в предпросмотре. -->
+  <div class="marking-print-sheet" id="marking-print-sheet" aria-hidden="true"></div>
+  <!-- Печатная лента редактора: только наклейки на белом фоне, 1:1. -->
+  <div class="marking-tape-print" id="marking-tape-print" aria-hidden="true"></div>
 
   <!-- Контекстное меню холста (ПКМ по модулю / проводу / пустому месту).
        Живёт на уровне body и позиционируется через position: fixed, чтобы его
@@ -756,6 +1023,77 @@
   <div class="context-menu" id="context-menu" role="menu" aria-label="Контекстное меню" hidden>
     <div class="context-menu-head" id="context-menu-head" aria-hidden="true"></div>
     <div class="context-menu-items" id="context-menu-items"></div>
+  </div>
+
+  <!-- Встроенный редактор наклейки. Позиционируется фиксированно рядом
+       с наклейкой в предпросмотре или с модулем на схеме (position: fixed). -->
+  <div class="marking-editor" id="marking-editor" role="dialog"
+       aria-label="Редактор наклейки" hidden>
+    <div class="marking-editor-head">
+      <div>
+        <span class="eyebrow">Редактор</span>
+        <strong id="marking-editor-title">Наклейка</strong>
+      </div>
+      <button class="marking-editor-close" id="marking-editor-close" type="button"
+              aria-label="Закрыть редактор" title="Закрыть">×</button>
+    </div>
+    <div class="marking-editor-body">
+      <label class="marking-field">
+        <span>Текст наклейки</span>
+        <input id="marking-main-input" class="marking-input" type="text" maxlength="80"
+               autocomplete="off" spellcheck="false" placeholder="Например: Свет кухни">
+      </label>
+      <label class="marking-field">
+        <span>Основной текст берём из</span>
+        <select id="marking-text-mode" class="marking-input">
+          <option value="description">Описание (description)</option>
+          <option value="tag">Тег (QF1)</option>
+          <option value="name">Название устройства</option>
+        </select>
+      </label>
+      <div class="marking-editor-row">
+        <label class="marking-field">
+          <span>Ориентация текста</span>
+          <select id="marking-text-orientation" class="marking-input">
+            <option value="horizontal">Горизонтальная</option>
+            <option value="vertical">Вертикальная</option>
+          </select>
+        </label>
+        <label class="marking-field">
+          <span>Ширина, мм</span>
+          <input id="marking-width-mm" class="marking-input" type="number"
+                 min="6" max="300" step="1" inputmode="numeric">
+        </label>
+      </div>
+      <label class="marking-field">
+        <span>Размер устройства</span>
+        <select id="marking-preset" class="marking-input">
+          <option value="0">Произвольная ширина</option>
+          <option value="18">1P — 18 мм</option>
+          <option value="36">2P — 36 мм</option>
+          <option value="54">3P — 54 мм</option>
+          <option value="72">4P — 72 мм</option>
+          <option value="108">6P — 108 мм</option>
+        </select>
+      </label>
+      <div class="marking-field">
+        <span>Фоновая пиктограмма</span>
+        <div class="marking-icon-picker" id="marking-icon-picker" role="group" aria-label="Пиктограмма"></div>
+      </div>
+      <div class="marking-editor-meta" id="marking-editor-meta"></div>
+    </div>
+    <div class="marking-editor-actions">
+      <button class="btn btn-secondary" id="marking-clone" type="button" title="Создать копию наклейки (Ctrl+C / Ctrl+V)">
+        Клонировать
+      </button>
+      <button class="btn btn-secondary" id="marking-group" type="button"
+              title="Объединить с соседней наклейкой в одну широкую">
+        Сгруппировать
+      </button>
+      <button class="btn btn-danger" id="marking-delete" type="button" title="Удалить наклейку с листа (Delete)">
+        Удалить
+      </button>
+    </div>
   </div>
 
   <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false"></div>
