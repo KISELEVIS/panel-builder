@@ -7684,9 +7684,11 @@
     clearAuthError();
   }
 
-  // Облачные кнопки доступны только авторизованному пользователю.
+  // Гость может пользоваться редактором; облачные кнопки остаются видимыми,
+  // но при нажатии requireAuth() откроет окно входа. Блокируем их только
+  // во время запроса и если библиотека Supabase вообще не загрузилась.
   function syncCloudControls() {
-    const disabled = cloudBusy || !currentUser;
+    const disabled = cloudBusy || !supabase;
     [dom.cloudSave, dom.cloudLoad].forEach((button) => {
       if (!button) return;
       button.disabled = disabled;
@@ -7812,8 +7814,7 @@
       if (error) throw error;
       applyAuthSession(null);
       if (dom.cloudDialog?.open) dom.cloudDialog.close();
-      showAuthDialog();
-      showToast('Вы вышли из аккаунта', 'success', 2600);
+      showToast('Вы вышли из аккаунта. Просмотр доступен без входа.', 'success', 3200);
     } catch (error) {
       reportCloudError('Ошибка выхода из аккаунта', error);
     } finally {
@@ -7827,7 +7828,7 @@
     syncCloudControls();
     if (!supabase) {
       setAuthError('Не удалось загрузить сервис авторизации. Проверьте соединение.');
-      showAuthDialog();
+      showToast('Облако недоступно: не загрузилась библиотека Supabase', 'error', 5000);
       return;
     }
     try {
@@ -7836,11 +7837,15 @@
       });
       const { data: { session } } = await supabase.auth.getSession();
       applyAuthSession(session?.user || null);
-      if (!session) showAuthDialog();
+      if (!session) {
+        // Гость видит весь сайт и работает локально; окно входа открывается
+        // только по кнопке «Войти» или при попытке сохранить/загрузить облако.
+        showToast('Просмотр доступен без входа. Нажмите «Войти» для работы с облаком.', 'success', 6500);
+      }
     } catch (error) {
       console.error('[Щит.Студия] Ошибка проверки сессии:', error);
       setAuthError('Не удалось проверить сессию. Попробуйте войти ещё раз.');
-      showAuthDialog();
+      showToast('Не удалось проверить сессию. Вы можете продолжить без входа.', 'error', 5000);
     }
   }
 
